@@ -1,0 +1,388 @@
+diff --git a/opendrop/client.py b/opendrop/client.py
+index 5ce8d43..859d68a 100644
+--- a/opendrop/client.py
++++ b/opendrop/client.py
+@@ -24,6 +24,10 @@ import os
+ import platform
+ import plistlib
+ import socket
++import ssl
++import struct
++import uuid
++import zlib
+ from http.client import HTTPSConnection
+ 
+ import fleep
+@@ -35,8 +39,100 @@ from .util import AbsArchiveWrite, AirDropUtil
+ logger = logging.getLogger(__name__)
+ 
+ 
++# --- modern AirDrop /Upload (dvzip) encoder ---------------------------------
++# A modern Apple receiver (macOS 26 / iOS) advertises SUPPORTS_DVZIP and expects
++# the /Upload payload as `application/x-dvzip`, NOT the legacy gzipped cpio. When
++# we sent gzip-cpio, a real receiver accepted /Ask then closed the /Upload with an
++# empty reply (RemoteDisconnected). dvzip framing = a sequence of
++# [4-byte big-endian length][zlib stream] blocks whose inflated bodies concatenate
++# into a standard ODC ('070707') cpio archive. (RE'd from a real macOS /Upload,
++# namedrop-re 2026-07-09; see CLAUDE.md + scratchpad/airdrop-receive-capture.py.)
++
++
++def _odc_cpio_header(name, mode, filesize, ino, nlink=1, mtime=0,
++                     uid=501, gid=20, dev=0):
++    """One ODC ('070707') cpio header + NUL-terminated name (76 header bytes +
++    name). ODC uses no per-record padding (unlike newc). Field defaults match a
++    real macOS /Upload (dev=0, uid=501/gid=20 -- the first Mac user); an Apple
++    receiver ignores uid/gid but we mirror them to stay byte-faithful."""
++    name_b = name.encode() + b"\x00"
++    return (
++        b"070707"
++        + b"%06o" % dev
++        + b"%06o" % (ino & 0o777777)
++        + b"%06o" % mode
++        + b"%06o" % uid
++        + b"%06o" % gid
++        + b"%06o" % nlink
++        + b"%06o" % 0                    # rdev
++        + b"%011o" % mtime
++        + b"%06o" % len(name_b)
++        + b"%011o" % filesize
++        + name_b
++    )
++
++
++def _appledouble(finder_info=b"\x00" * 32):
++    """Minimal AppleDouble ('._<file>') sidecar body, as macOS emits one for a
++    file with no resource fork / no extended attributes: a 26-byte header, two
++    entry descriptors -- id 9 (Finder Info, 32 bytes) + id 2 (Resource Fork,
++    empty) -- and the 32-byte Finder Info block. (A real macOS /Upload embeds the
++    file's actual xattrs here -- quarantine, TextEncoding, Finder tags -- but those
++    are file-specific; a well-formed minimal AppleDouble is what a fresh file
++    produces and is what the receiver validates for.)"""
++    magic = b"\x00\x05\x16\x07"
++    version = b"\x00\x02\x00\x00"
++    filler = b"Mac OS X        "               # 16 bytes, exactly as macOS writes
++    hdr_len = 4 + 4 + 16 + 2 + 12 + 12          # = 50 (header + 2 descriptors)
++    e_finder = struct.pack(">III", 9, hdr_len, len(finder_info))   # Finder Info
++    e_rsrc = struct.pack(">III", 2, hdr_len + len(finder_info), 0)  # empty rsrc fork
++    return magic + version + filler + struct.pack(">H", 2) + e_finder + e_rsrc + finder_info
++
++
++def _cpio_segments(file_path):
++    """Build an ODC cpio for `file_path` and return it as the list of byte
++    segments flushed as separate dvzip blocks. Entry layout mirrors a real macOS
++    /Upload exactly: the '.' dir, the './<file>' data, its './._<file>'
++    AppleDouble sidecar, then TRAILER!!! + NUL padding to a 512-byte boundary.
++    (The AppleDouble entry -- which stock/earlier builds omitted -- is required:
++    a modern receiver rejected an archive without it, accepting /Ask then closing
++    /Upload with RemoteDisconnected. RE'd from a captured macOS /Upload,
++    namedrop-re 2026-07-08.)"""
++    with open(file_path, "rb") as f:
++        data = f.read()
++    name = os.path.basename(file_path)
++    try:
++        mtime = int(os.path.getmtime(file_path))
++    except OSError:
++        mtime = 0
++    ad = _appledouble()
++    segs = [
++        _odc_cpio_header(".", 0o040700, 0, ino=0, nlink=2, mtime=mtime),
++        _odc_cpio_header("./" + name, 0o100644, len(data), ino=1, mtime=mtime),
++        data,
++        _odc_cpio_header("./._" + name, 0o100644, len(ad), ino=2, mtime=mtime),
++        ad,
++    ]
++    trailer = _odc_cpio_header("TRAILER!!!", 0, 0, ino=3, uid=0, gid=0)
++    total = sum(len(s) for s in segs) + len(trailer)
++    segs.append(trailer + b"\x00" * ((-total) % 512))
++    return segs
++
++
++def build_dvzip(file_path):
++    """Return the `application/x-dvzip` /Upload body for `file_path`: each cpio
++    segment zlib-compressed into its own [4-byte BE length][zlib stream] block,
++    matching the block framing a real macOS sender emits."""
++    out = bytearray()
++    for seg in _cpio_segments(file_path):
++        z = zlib.compress(seg)
++        out += struct.pack(">I", len(z)) + z
++    return bytes(out)
++
++
+ class AirDropBrowser:
+     def __init__(self, config):
++        self.config = config
+         self.ip_addr = AirDropUtil.get_ip_for_interface(config.interface, ipv6=True)
+         if self.ip_addr is None:
+             if config.interface == "awdl0":
+@@ -57,6 +153,7 @@ class AirDropBrowser:
+         self.callback_add = None
+         self.callback_remove = None
+         self.browser = None
++        self._solicit_dev = None  # hci device we started a BLE solicitation on (None = off)
+ 
+     def start(self, callback_add=None, callback_remove=None):
+         """
+@@ -64,15 +161,64 @@ class AirDropBrowser:
+         """
+         if self.browser is not None:
+             return  # already started
++        # Wake idle Apple receivers FIRST: an idle iPhone never advertises `_airdrop._tcp`
++        # until it hears a sender's BLE AirDrop 0x05 solicitation, so a bare mDNS browse finds
++        # nothing (see CLAUDE.md "THE REAL reason SEND fails"). Emit the beacon before/while we
++        # browse so the phone turns its receiver advert on for us. Best-effort — a mDNS-only
++        # browse still works against a device already advertising (e.g. share sheet open).
++        self._start_solicitation()
+         self.callback_add = callback_add
+         self.callback_remove = callback_remove
+         self.browser = ServiceBrowser(self.zeroconf, "_airdrop._tcp.local.", self)
+ 
+     def stop(self):
++        self._stop_solicitation()
+         self.browser.cancel()
+         self.browser = None
+         self.zeroconf.close()
+ 
++    def _start_solicitation(self):
++        """Advertise the AirDrop 0x05 BLE solicitation to wake idle receivers (best-effort).
++
++        Uses the RTL8852BU (built-in BT) via raw HCI, which needs root, so this is a no-op with
++        a logged warning when unprivileged, when hci0 is missing/busy, or when the `namedrop`
++        package isn't importable. Controlled by `config.ble_solicit` (default True);
++        `config.ble_hci_dev` / `config.ble_mac` override the device / advertising MAC.
++        """
++        if not getattr(self.config, "ble_solicit", True):
++            return
++        try:
++            from namedrop import ble_trigger
++        except Exception as e:  # namedrop not installed alongside opendrop
++            logger.debug(f"BLE solicitation unavailable (namedrop not importable): {e}")
++            return
++        dev = getattr(self.config, "ble_hci_dev", ble_trigger.DEFAULT_HCI_DEV)
++        mac = getattr(self.config, "ble_mac", None) or ble_trigger.random_ble_mac()
++        try:
++            ble_trigger.advertise(mac, message=ble_trigger.build_airdrop_message(), dev=dev)
++        except Exception as e:
++            logger.warning(
++                f"Could not emit AirDrop BLE solicitation ({e}). Idle iPhones may not advertise "
++                "_airdrop._tcp, so discovery can find nothing. Run under sudo with bluetoothd "
++                "stopped (`sudo systemctl stop bluetooth`), or set config.ble_solicit=False to "
++                "silence this."
++            )
++            return
++        self._solicit_dev = dev
++        logger.info(f"Emitting AirDrop BLE solicitation from {mac} on {dev} to wake receivers")
++
++    def _stop_solicitation(self):
++        if self._solicit_dev is None:
++            return
++        try:
++            from namedrop import ble_trigger
++
++            ble_trigger.stop_advertising(dev=self._solicit_dev)
++        except Exception as e:
++            logger.debug(f"Error stopping BLE solicitation: {e}")
++        finally:
++            self._solicit_dev = None
++
+     def add_service(self, zeroconf, service_type, name):
+         info = zeroconf.get_service_info(service_type, name)
+         logger.debug(f"Add service {name}")
+@@ -85,6 +231,11 @@ class AirDropBrowser:
+         if self.callback_remove is not None:
+             self.callback_remove(info)
+ 
++    def update_service(self, zeroconf, service_type, name):
++        # Mandatory since python-zeroconf 0.x (was a FutureWarning, now fatal).
++        # We don't act on service updates for AirDrop discovery.
++        pass
++
+ 
+ class AirDropClient:
+     def __init__(self, config, receiver):
+@@ -145,25 +296,57 @@ class AirDropClient:
+         return response.get("ReceiverComputerName")
+ 
+     def send_ask(self, file_path, is_url=False, icon=None):
++        # namedrop-re: match a real modern macOS sender's /Ask. Captured from a
++        # MacBook Air sending to our receiver (scratchpad/captures/*-Ask-*), stock
++        # OpenDrop omitted TransferID + TransferType. A modern receiver tracks the
++        # transfer by TransferID and binds the follow-up /Upload to it; without one
++        # our /Upload had nothing to correlate to and got dropped (RemoteDisconnected).
++        # Keep the id on self so /Upload can reference it if needed.
++        self.transfer_id = str(uuid.uuid4()).upper()
+         ask_body = {
++            "TransferID": {"id": self.transfer_id},
++            "TransferType": {"files": {}},
+             "SenderComputerName": self.config.computer_name,
+             "BundleID": "com.apple.finder",
+             "SenderModelName": self.config.computer_model,
+             "SenderID": self.config.service_id,
++            # A real macOS /Ask always carries an (empty for file transfers) Items
++            # list alongside Files; include it for parity. (namedrop-re)
++            "Items": [],
+             "ConvertMediaFormats": False,
+         }
+         if self.config.record_data:
+             ask_body["SenderRecordData"] = self.config.record_data
+ 
++        def uti_for(file, file_name):
++            # fleep can't sniff a vCard (text, no magic) -> it defaults to
++            # public.content; a real macOS sender tags a contact card
++            # public.vcard. Since the NameDrop deliverable IS a contact card,
++            # detect it by extension / BEGIN:VCARD and set the right UTI.
++            if file_name.lower().endswith(".vcf"):
++                return "public.vcard"
++            try:
++                with open(file, "rb") as fh:
++                    if fh.read(11) == b"BEGIN:VCARD":
++                        return "public.vcard"
++            except OSError:
++                pass
++            return AirDropUtil.get_uti_type(flp)
++
+         def file_entries(files):
+             for file in files:
+                 file_name = os.path.basename(file)
++                try:
++                    file_size = os.path.getsize(file)
++                except OSError:
++                    file_size = 0
+                 file_entry = {
+                     "FileName": file_name,
+-                    "FileType": AirDropUtil.get_uti_type(flp),
++                    "FileType": uti_for(file, file_name),
++                    "FileSize": file_size,
+                     "FileBomPath": os.path.join(".", file_name),
+                     "FileIsDirectory": os.path.isdir(file_name),
+-                    "ConvertMediaFormats": 0,
++                    "ShouldConvertMediaFormats": False,
+                 }
+                 yield file_entry
+ 
+@@ -189,36 +372,68 @@ class AirDropClient:
+ 
+         return success
+ 
+-    def send_upload(self, file_path, is_url=False):
++    def send_upload(self, file_path, is_url=False, use_dvzip=True):
+         """
+         Send a file to a receiver.
++
++        A modern Apple receiver expects `application/x-dvzip` (use_dvzip=True,
++        the default) -- sending the legacy gzipped cpio made every real receiver
++        accept /Ask then close /Upload with no reply (RemoteDisconnected). Pass
++        use_dvzip=False only to interop with a legacy/stock-OpenDrop receiver
++        (e.g. the local loopback self-test).
+         """
+         # Don't send an upload request if we just sent a link
+         if is_url:
+             return
+ 
+-        headers = {
+-            "Content-Type": "application/x-cpio",
+-        }
+-
+-        # Create archive in memory ...
+-        stream = io.BytesIO()
+-        with libarchive.custom_writer(
+-            stream.write,
+-            "cpio",
+-            filter_name="gzip",
+-            archive_write_class=AbsArchiveWrite,
+-        ) as archive:
+-            for f in [file_path]:
+-                ff = os.path.basename(f)
+-                archive.add_abs_file(f, os.path.join(".", ff))
+-        stream.seek(0)
+-
+-        # ... then send in chunked mode
++        # A real macOS /Upload request carries TWO headers stock OpenDrop never sent,
++        # captured from a live Mac (scratchpad/captures/*-Upload-*.headers.txt):
++        #   TransferID: <same UUID as the accepted /Ask>  -- the receiver binds the
++        #     incoming payload to the transfer the user accepted via THIS header (the
++        #     /Ask *body* TransferID is not enough); without it the receiver can't
++        #     correlate the /Upload and closes the connection (RemoteDisconnected).
++        #   TotalBytes: <sum of uncompressed file sizes>  (real Mac: 79093 for a 79 KB
++        #     vCard, 1 for a 1-byte file) -- NOT the dvzip-compressed length.
++        # (namedrop-re 2026-07-08 added TransferID to the /Ask body but not here.)
++        try:
++            total_bytes = sum(
++                os.path.getsize(f) for f in ([file_path] if isinstance(file_path, str) else file_path)
++            )
++        except OSError:
++            total_bytes = 0
++        upload_id_headers = {"TotalBytes": str(total_bytes)}
++        if getattr(self, "transfer_id", None):
++            upload_id_headers["TransferID"] = self.transfer_id
++
++        if use_dvzip:
++            headers = {"Content-Type": "application/x-dvzip", **upload_id_headers}
++            # dvzip is already length-prefixed per block; wrap in BytesIO so
++            # http.client streams it Transfer-Encoding: chunked (see below).
++            stream = io.BytesIO(build_dvzip(file_path))
++        else:
++            headers = {"Content-Type": "application/x-cpio", **upload_id_headers}
++            # Legacy path: gzipped ODC cpio, single './<file>' entry.
++            stream = io.BytesIO()
++            with libarchive.custom_writer(
++                stream.write,
++                "cpio",
++                filter_name="gzip",
++                archive_write_class=AbsArchiveWrite,
++            ) as archive:
++                for f in [file_path]:
++                    ff = os.path.basename(f)
++                    archive.add_abs_file(f, os.path.join(".", ff))
++            stream.seek(0)
++
++        # Apple's AirDrop /Upload endpoint REQUIRES a chunked body (its receiver rejects a
++        # non-chunked upload -- cf. opendrop's own server handle_upload(): "Expect chunked
++        # transfer encoding" -> 400). Passing the file-like BytesIO (no fileno, so no
++        # computable length) makes http.client emit Transfer-Encoding: chunked, which is what
++        # the receiver streams. (An earlier revision read this into bytes to force a fixed
++        # Content-Length -- that is what made every Apple receiver, Mac and iOS, close the
++        # connection with no response right after /Ask; never do that here.)
+         success, _ = self.send_POST("/Upload", stream, headers=headers)
+ 
+-        # TODO better: write archive chunk whenever send_POST does a read to avoid having the whole archive in memory
+-
+         return success
+ 
+     def _get_headers(self):
+@@ -263,15 +478,24 @@ class HTTPSConnectionAWDL(HTTPSConnection):
+         if timeout is None:
+             timeout = socket.getdefaulttimeout()
+ 
++        # Python 3.12 removed key_file/cert_file/check_hostname from
++        # HTTPSConnection.__init__. Fold any provided values into the SSLContext
++        # (which is how modern Python wants TLS material supplied) so we can still
++        # pass an extracted leaf+intermediate+key chain for the VR transplant.
++        if key_file is not None or cert_file is not None:
++            if context is None:
++                context = ssl._create_unverified_context()
++            if cert_file is not None:
++                context.load_cert_chain(cert_file, key_file)
++        if check_hostname is not None and context is not None:
++            context.check_hostname = check_hostname
++
+         super(HTTPSConnectionAWDL, self).__init__(
+             host=host,
+             port=port,
+-            key_file=key_file,
+-            cert_file=cert_file,
+             timeout=timeout,
+             source_address=source_address,
+             context=context,
+-            check_hostname=check_hostname,
+         )
+ 
+         self.interface_name = interface_name
+@@ -299,7 +523,7 @@ class HTTPSConnectionAWDL(HTTPSConnection):
+             sock = None
+             try:
+                 sock = socket.socket(af, socktype, proto)
+-                if timeout is not socket.getdefaulttimeout():
++                if timeout is not None:
+                     sock.settimeout(timeout)
+                 if self.interface_name == "awdl0" and platform.system() == "Darwin":
+                     sock.setsockopt(socket.SOL_SOCKET, 0x1104, 1)

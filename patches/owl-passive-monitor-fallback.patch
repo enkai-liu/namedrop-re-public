@@ -1,0 +1,81 @@
+diff --git a/daemon/netutils.c b/daemon/netutils.c
+index 313e3ad..8d12910 100644
+--- a/daemon/netutils.c
++++ b/daemon/netutils.c
+@@ -199,7 +199,11 @@ out:
+ 	return err;
+ }
+ 
+-int set_monitor_mode(int ifindex) {
++/* Set the interface to monitor mode. With active=true the card is asked to
++ * hardware-ACK frames addressed to the monitor interface (NL80211_MNTR_FLAG_ACTIVE);
++ * some drivers (notably ath9k_htc / AR9271 USB) reject that flag with EOPNOTSUPP.
++ * set_monitor_mode() below tries active first, then falls back to passive. */
++static int set_monitor_mode_flags(int ifindex, bool active) {
+ 	int err = 0;
+ 	struct nl_msg *m = NULL;
+ 	struct nl_msg *flags = NULL;
+@@ -216,16 +220,18 @@ int set_monitor_mode(int ifindex) {
+ 	NLA_PUT_U32(m, NL80211_ATTR_IFINDEX, ifindex);
+ 	NLA_PUT_U32(m, NL80211_ATTR_IFTYPE, NL80211_IFTYPE_MONITOR);
+ 
+-	flags = nlmsg_alloc();
+-	if (!flags) {
+-		log_error("Could not allocate netlink message");
+-		err = -ENOMEM;
+-		goto out;
++	if (active) {
++		flags = nlmsg_alloc();
++		if (!flags) {
++			log_error("Could not allocate netlink message");
++			err = -ENOMEM;
++			goto out;
++		}
++		NLA_PUT_FLAG(flags, NL80211_MNTR_FLAG_ACTIVE);
++		nla_put_nested(m, NL80211_ATTR_MNTR_FLAGS, flags);
++		nlmsg_free(flags);
++		flags = 0;
+ 	}
+-	NLA_PUT_FLAG(flags, NL80211_MNTR_FLAG_ACTIVE);
+-	nla_put_nested(m, NL80211_ATTR_MNTR_FLAGS, flags);
+-	nlmsg_free(flags);
+-	flags = 0;
+ 
+ 	err = nl_send_auto(nl80211_state.socket, m);
+ 	if (err < 0) {
+@@ -235,7 +241,12 @@ int set_monitor_mode(int ifindex) {
+ 
+ 	err = nl_recvmsgs_default(nl80211_state.socket);
+ 	if (err < 0) {
+-		log_error("Error while receiving via netlink: %s", nl_geterror(err));
++		/* Quiet on the active attempt — the caller retries passive. */
++		if (active)
++			log_error("Active monitor mode rejected (%s); retrying passive",
++			          nl_geterror(err));
++		else
++			log_error("Error while receiving via netlink: %s", nl_geterror(err));
+ 		goto out;
+ 	}
+ 
+@@ -252,6 +263,21 @@ out:
+ 	return err;
+ }
+ 
++int set_monitor_mode(int ifindex) {
++	/* Prefer active monitor (card ACKs frames -> full throughput). Cards that
++	 * don't support it (ath9k_htc/AR9271) fall back to passive monitor, which
++	 * still works: the peer re-transmits un-ACKed frames up to 7x. Fine for the
++	 * small contact-card payloads NameDrop exchanges. */
++	int err = set_monitor_mode_flags(ifindex, true);
++	if (err < 0) {
++		err = set_monitor_mode_flags(ifindex, false);
++		if (err == 0)
++			log_error("Running in PASSIVE monitor mode (no HW ACK) — "
++			          "expect throughput degradation on large transfers");
++	}
++	return err;
++}
++
+ #define BIT(x) (1ULL<<(x))
+ 
+ struct channels_ctx {

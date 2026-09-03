@@ -1,0 +1,8 @@
+BEGIN:VCARD
+VERSION:3.0
+N:Apple;Genuine;;;
+FN:Genuine Apple
+ORG:Definitely Apple Inc.
+TITLE:100% Real Not a Proxmark
+EMAIL;type=INTERNET;type=pref:genuine@apple.example
+END:VCARD

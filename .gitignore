@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OWL / build artifacts
+third_party/owl/build/
+*.o
+*.so
+
+# Captures / scratch / takes
+captures/
+takes/
+*.pcap
+*.pcapng
+scratch/
+
+# OS
+.DS_Store
+
+# Local config (deploy targets, device addrs)
+.env
+*.local
+
+# The SNAP card identity: PRIVATE keys for the applet in firmware/hf_namedrop_snap.h.
+# Regenerate both halves together with scripts/build-snap-serverinfo.py -- the header
+# holds only the public blob, this file holds the private half the AWDL leg needs.
+snap-identity.json
+
+# Extracted Apple-ID credentials -- NEVER commit these.
+*.pem
+*.cms
+key.raw
+kc_*.bin

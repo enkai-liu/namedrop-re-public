@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "namedrop-re"
+version = "0.0.1"
+description = "Interoperable re-implementation of Apple NameDrop (NFC-bump contact sharing) for Linux/Android <-> iPhone"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "namedrop-re contributors" }]
+keywords = ["airdrop", "namedrop", "awdl", "nfc", "ecp", "quic", "interoperability"]
+
+# Runtime deps are intentionally minimal. The radio work is delegated to external
+# binaries (owl, opendrop), invoked out of process so the moving parts stay loosely coupled.
+dependencies = []
+
+[project.optional-dependencies]
+# The NameDrop transport: the bump routes to QUIC/HTTP-3 on _asquic._udp, not to
+# _airdrop._tcp/HTTPS. asquic-receiver.py serves that; mdns-advertise.py publishes the
+# _asquic record (via zeroconf) that the bump resolves; build-snap-serverinfo.py mints the
+# card identity both of them key off (cryptography).
+asquic = ["aioquic>=1.0", "cryptography>=42", "zeroconf"]
+dev = ["ruff>=0.4"]
+
+[project.scripts]
+namedrop = "namedrop.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.ruff]
+line-length = 100

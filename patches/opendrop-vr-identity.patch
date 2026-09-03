@@ -1,0 +1,59 @@
+diff --git a/opendrop/config.py b/opendrop/config.py
+index d20f33a..fb5bbcc 100644
+--- a/opendrop/config.py
++++ b/opendrop/config.py
+@@ -114,7 +114,14 @@ class AirDropConfig:
+         self.cert_file = os.path.join(self.key_dir, "certificate.pem")
+         self.key_file = os.path.join(self.key_dir, "key.pem")
+ 
+-        if not os.path.exists(self.cert_file) or not os.path.exists(self.key_file):
++        # namedrop-re (VR gate two-pass): if certificate.pem + key.pem already exist we
++        # treat them as the EXTRACTED bridged Apple-ID chain (pass 2) and never overwrite
++        # them. Only self-sign when absent -> that is pass 1 / Everyone. This flag is the
++        # single source of truth for which identity we present on the wire.
++        self.identity_is_extracted = os.path.exists(self.cert_file) and os.path.exists(
++            self.key_file
++        )
++        if not self.identity_is_extracted:
+             logger.info("Key file or certificate does not exist")
+             self.create_default_key()
+ 
+@@ -127,6 +134,19 @@ class AirDropConfig:
+         else:
+             logger.debug("No Apple ID Validation Record found")
+ 
++        # namedrop-re: hard-warn on the one combination that silently breaks pass 2 --
++        # a real validation record present but only a self-signed cert to bind it to.
++        # sharingd binds the presented client-cert CN <-> altDSID *inside* the VR, so a
++        # self-signed CN cannot satisfy that bind and the Ask phase will look like a false
++        # reject. If you meant pass 2, stage the extracted leaf+intermediate+key too.
++        if self.record_data is not None and not self.identity_is_extracted:
++            logger.warning(
++                "validation_record.cms is present but certificate.pem/key.pem are "
++                "self-signed (not extracted) -- sharingd binds cert CN <-> altDSID in the "
++                "VR, so this mismatch will likely be rejected. Stage the extracted "
++                "leaf+intermediate+key for a valid pass-2 test."
++            )
++
+     def create_default_key(self):
+         logger.info(f"Create new self-signed certificate in {self.key_dir}")
+         if not os.path.exists(self.key_dir):
+@@ -165,4 +185,18 @@ class AirDropConfig:
+         ctx.verify_mode = (
+             ssl.CERT_NONE
+         )  # we accept self-signed certificates as does Apple
++        # namedrop-re: log which identity we actually present + whether a VR rides along,
++        # so the two-pass result is unambiguous straight from the client log. The extracted
++        # chain (leaf+intermediate) and unencrypted PKCS#8 key are loaded by load_cert_chain
++        # above with no passphrase -- see tools/airdrop-extractor-macos26/raw-ec-to-pem.py.
++        logger.info(
++            "AirDrop TLS identity: %s (%s); validation record %s",
++            "EXTRACTED Apple ID chain (pass 2)"
++            if self.identity_is_extracted
++            else "self-signed (pass 1 / Everyone)",
++            self.cert_file,
++            "attached (%d bytes)" % len(self.record_data)
++            if self.record_data
++            else "absent",
++        )
+         return ctx

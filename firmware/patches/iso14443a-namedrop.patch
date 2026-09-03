@@ -1,0 +1,124 @@
+diff --git a/armsrc/iso14443a.c b/armsrc/iso14443a.c
+index 2672a1b..1086fdd 100644
+--- a/armsrc/iso14443a.c
++++ b/armsrc/iso14443a.c
+@@ -1157,6 +1157,60 @@ bool GetIso14443aCommandFromReader(uint8_t *received, uint16_t received_maxlen,
+     return false;
+ }
+ 
++// Same as GetIso14443aCommandFromReader(), but bounded. The blocking variant waits forever
++// for a reader frame, which is wrong for any mode that must keep TRANSMITTING on a schedule:
++// with a quiet field it never returns, so the caller's own re-arm deadline never runs. (That
++// cost a NameDrop sender take: 3 announcements in 90 s instead of ~70.)
++// Returns 1 = frame decoded, 0 = timed out, -1 = aborted (button / USB command).
++int GetIso14443aCommandFromReaderTimeout(uint8_t *received, uint16_t received_maxlen, uint8_t *par,
++                                         int *len, uint32_t timeout_ms) {
++
++    LED_D_OFF();
++    FpgaWriteConfWord(FPGA_MAJOR_MODE_HF_ISO14443A | FPGA_HF_ISO14443A_TAGSIM_LISTEN);
++
++    Uart14aInit(received, received_maxlen, par);
++
++    uint8_t b = (uint8_t)AT91C_BASE_SSC->SSC_RHR;
++    (void)b;
++
++    uint32_t start = GetTickCount();
++    uint8_t flip = 0;
++    uint16_t checker = 4000;
++    for (;;) {
++
++        WDT_HIT();
++
++        if (flip == 3) {
++            if (data_available()) {
++                return -1;
++            }
++            flip = 0;
++        }
++
++        if (checker-- == 0) {
++            if (BUTTON_PRESS()) {
++                return -1;
++            }
++            // the deadline rides the existing periodic check, so it costs nothing in the
++            // sample-polling hot path
++            if (GetTickCountDelta(start) > timeout_ms) {
++                return 0;
++            }
++            flip++;
++            checker = 4000;
++        }
++
++        if (AT91C_BASE_SSC->SSC_SR & (AT91C_SSC_RXRDY)) {
++            b = (uint8_t)AT91C_BASE_SSC->SSC_RHR;
++            if (MillerDecoding(b, 0)) {
++                *len = Uart.len;
++                return 1;
++            }
++        }
++    }
++    return 0;
++}
++
+ bool prepare_tag_modulation(tag_response_info_t *response_info, size_t max_buffer_size)  {
+     // Example response, answer to MIFARE Classic read block will be 16 bytes + 2 CRC = 18 bytes
+     // This will need the following byte array for a modulation sequence
+@@ -3161,6 +3215,25 @@ static void iso14a_set_ATS_times(const uint8_t *ats) {
+ }
+ 
+ 
++// namedrop-re: opt-in single-shot polling.
++//
++// GetATQA()'s normal behaviour is a TIME-BOUNDED round robin: it re-transmits the polling
++// frame every REQUEST_GUARD_TIME (~516 us) until a card answers or retry_timeout expires
++// (10 ms for a one-frame set), which puts ~22 frames on the air per call. That is right for
++// finding an unknown card and wrong for impersonating a specific reader.
++//
++// Ground truth (docs/evidence/pm3-bump-sniff-20260813-135305-namedrop-01/trace.txt): a real
++// Apple NameDrop initiator polls with exactly ONE REQA and the card answers 0.164 ms later.
++// Across that whole 15.7 s two-iPhone capture there are ZERO WUPA frames. Our sender take
++// emitted 154 WUPA for 7 polls -- 22.0 per poll -- and got zero Tag rows.
++//
++// Opt-in, so no other PM3 command changes behaviour.
++static bool g_atqa_single_shot = false;
++
++void iso14a_set_atqa_single_shot(bool enable) {
++    g_atqa_single_shot = enable;
++}
++
+ int GetATQA(uint8_t *resp, uint16_t resp_len, uint8_t *resp_par, const iso14a_polling_parameters_t *polling_parameters) {
+ #define RETRY_TIMEOUT 10
+ 
+@@ -3209,6 +3282,11 @@ int GetATQA(uint8_t *resp, uint16_t resp_len, uint8_t *resp_par, const iso14a_po
+         // Go over frame configurations, loop back when we reach the end
+         curr = (curr < (p.frame_count - 1)) ? curr + 1 : 0;
+ 
++        // single-shot: one frame on the air, then give up -- what a real reader does
++        if (g_atqa_single_shot) {
++            break;
++        }
++
+     } while (len == 0 && GetTickCountDelta(start_time) <= retry_timeout);
+ 
+     iso14a_set_timeout(save_iso14a_timeout);
+diff --git a/armsrc/iso14443a.h b/armsrc/iso14443a.h
+index 8049ff2..97fee0b 100644
+--- a/armsrc/iso14443a.h
++++ b/armsrc/iso14443a.h
+@@ -164,8 +164,16 @@ bool SimulateIso14443aInit(uint8_t tagType, uint16_t flags, uint8_t *data,
+                            uint8_t *ulc_key);
+ 
+ bool GetIso14443aCommandFromReader(uint8_t *received, uint16_t received_maxlen, uint8_t *par, int *len);
++// Bounded variant: 1 = frame, 0 = timeout, -1 = abort. Use when the caller must keep to its own
++// transmit schedule -- the blocking variant never returns on a quiet field.
++int GetIso14443aCommandFromReaderTimeout(uint8_t *received, uint16_t received_maxlen, uint8_t *par,
++                                         int *len, uint32_t timeout_ms);
+ void iso14443a_antifuzz(uint32_t flags);
+ int GetATQA(uint8_t *resp, uint16_t resp_len, uint8_t *resp_par, const iso14a_polling_parameters_t *polling_parameters);
++// namedrop-re: when enabled, GetATQA() puts exactly ONE polling frame on the air instead of
++// re-transmitting for retry_timeout (~22 frames / 11 ms with the default one-frame set).
++// A real Apple NameDrop initiator polls with a single REQA; see the comment at GetATQA().
++void iso14a_set_atqa_single_shot(bool enable);
+ void ReaderIso14443a(PacketCommandNG *c);
+ void ReaderTransmit(const uint8_t *frame, uint16_t len, uint32_t *timing);
+ void ReaderTransmitBitsPar(const uint8_t *frame, uint16_t bits, uint8_t *par, uint32_t *timing);

@@ -1,0 +1,55 @@
+diff --git a/opendrop/server.py b/opendrop/server.py
+index bbf8929..c844278 100644
+--- a/opendrop/server.py
++++ b/opendrop/server.py
+@@ -230,6 +230,25 @@ class AirDropServerHandler(BaseHTTPRequestHandler):
+         if self.config.record_data:
+             discover_answer["ReceiverRecordData"] = self.config.record_data
+ 
++        # Two capability fields a real receiver returns and stock OpenDrop never did.
++        # sharingd's Discover key table is {ReceiverComputerName, ReceiverMediaCapabilities,
++        # ReceiverRecordData, ReceiverModelName, SendersKnownAlias, IsAirDropable,
++        # DeviceSupportFlags, HeadphoneEngravings} and the sender logs our answer as
++        #   DISCOVER response Nm "..", mediaCapabilities .., receiverRecordData: ..,
++        #   senderKnownAlias: .., isAirDropable ..
++        # so it parses IsAirDropable out of this very dict. DeviceSupportFlags is the same
++        # bitfield family as the mDNS TXT `flags`: a real iPhone sends us 0x1B3FB in every
++        # /Discover request and its low 10 bits are 0x3FB, the documented macOS
++        # sharingd`[SDRapportBrowser defaultSFNodeFlags]. Set None to omit a field, which is
++        # the control arm reproducing the historical (stock-OpenDrop) response exactly.
++        is_airdropable = getattr(self.config, "is_airdropable", True)
++        if is_airdropable is not None:
++            discover_answer["IsAirDropable"] = bool(is_airdropable)
++
++        device_support_flags = getattr(self.config, "device_support_flags", 0x1B3FB)
++        if device_support_flags is not None:
++            discover_answer["DeviceSupportFlags"] = int(device_support_flags)
++
+         discover_answer_binary = plistlib.dumps(
+             discover_answer, fmt=plistlib.FMT_BINARY  # pylint: disable=no-member
+         )
+@@ -251,6 +270,24 @@ class AirDropServerHandler(BaseHTTPRequestHandler):
+             "ReceiverModelName": self.config.computer_model,
+             "ReceiverComputerName": self.config.computer_name,
+         }
++
++        # sharingd's send state machine runs ASK -> UserSafety -> CONTACTS -> SHARE CONTACT
++        # PERMISSION -> EXCHANGING -> UPLOAD, and the CONTACTS stage branches on a value it
++        # reads out of THIS dict:
++        #   ASK response Nm "..", supportsContactExchange .., customPayload ..
++        #   Send StateMachine CONTACTS START   {receiverSupportsContactExchange: %s, type: %s}
++        #   Send StateMachine CONTACTS SKIPPED {receiverSupportsContactExchange: %s, type: %s}
++        # So a receiver that omits SupportsContactExchange can never get the reciprocal half
++        # of a NameDrop -- the sender skips the exchange outright.
++        #
++        # DEFAULT OFF on purpose. The first milestone is a ONE-WAY Everyone-mode transfer, and
++        # claiming this capability adds a CONTACTS + EXCHANGING stage we do not serve yet, which
++        # could stall a transfer that currently completes. Turn it on for the mutual-exchange arm.
++        supports_contact_exchange = getattr(
++            self.config, "supports_contact_exchange", False
++        )
++        if supports_contact_exchange:
++            ask_response["SupportsContactExchange"] = True
+         ask_resp_binary = plistlib.dumps(
+             ask_response, fmt=plistlib.FMT_BINARY  # pylint: disable=no-member
+         )

@@ -1,0 +1,38 @@
+diff --git a/armsrc/Standalone/Makefile.hal b/armsrc/Standalone/Makefile.hal
+index 028c482..4ab787f 100644
+--- a/armsrc/Standalone/Makefile.hal
++++ b/armsrc/Standalone/Makefile.hal
+@@ -119,6 +119,9 @@ define KNOWN_STANDALONE_DEFINITIONS
+ | HF_MSDSAL       | Read and emulate MSD Visa cards        |
+ |                 | - Salvador Mendoza                     |
+ +----------------------------------------------------------+
++| HF_NAMEDROP     | Apple NameDrop peer: ECP-emitting      |
++|                 | ISO-DEP card, logs the iOS SELECT AID  |
+++----------------------------------------------------------+
+ | HF_REBLAY       | 14A Relay over BT                      |
+ | (RDV4 only)     |  - Salvador Mendoza                    |
+ +----------------------------------------------------------+
+@@ -148,7 +151,7 @@ endef
+ 
+ STANDALONE_MODES := LF_SKELETON
+ STANDALONE_MODES += LF_EM4100EMUL LF_EM4100RSWB LF_EM4100RSWW LF_EM4100RWC LF_HIDBRUTE LF_HIDFCBRUTE LF_ICEHID LF_MULTIHID LF_NEDAP_SIM LF_NEXID LF_PROXBRUTE LF_PROX2BRUTE LF_SAMYRUN LF_THAREXDE
+-STANDALONE_MODES += HF_14ASNIFF HF_14BSNIFF HF_15SNIFF HF_15SIM HF_AVEFUL HF_BOG HF_CARDHOPPER HF_COLIN HF_CRAFTBYTE HF_DOEGOX_AUTH0 HF_ICECLASS HF_LEGIC HF_LEGICSIM HF_MATTYRUN HF_MFCSIM HF_MSDSAL HF_REBLAY HF_ST25_TEAROFF HF_TCPRST HF_TMUDFORD HF_UNISNIFF HF_YOUNG HF_EMVPNG
++STANDALONE_MODES += HF_14ASNIFF HF_14BSNIFF HF_15SNIFF HF_15SIM HF_AVEFUL HF_BOG HF_CARDHOPPER HF_COLIN HF_CRAFTBYTE HF_DOEGOX_AUTH0 HF_ICECLASS HF_LEGIC HF_LEGICSIM HF_MATTYRUN HF_MFCSIM HF_MSDSAL HF_NAMEDROP HF_REBLAY HF_ST25_TEAROFF HF_TCPRST HF_TMUDFORD HF_UNISNIFF HF_YOUNG HF_EMVPNG
+ STANDALONE_MODES += DANKARMULTI
+ STANDALONE_MODES_REQ_BT := HF_CARDHOPPER HF_REBLAY
+ STANDALONE_MODES_REQ_SMARTCARD :=
+diff --git a/armsrc/Standalone/Makefile.inc b/armsrc/Standalone/Makefile.inc
+index 0358cd5..dbdc828 100644
+--- a/armsrc/Standalone/Makefile.inc
++++ b/armsrc/Standalone/Makefile.inc
+@@ -141,6 +141,10 @@ endif
+ ifneq (,$(findstring WITH_STANDALONE_HF_MSDSAL,$(APP_CFLAGS)))
+     SRC_STANDALONE = hf_msdsal.c
+ endif
++# WITH_STANDALONE_HF_NAMEDROP
++ifneq (,$(findstring WITH_STANDALONE_HF_NAMEDROP,$(APP_CFLAGS)))
++    SRC_STANDALONE = hf_namedrop.c
++endif
+ # WITH_STANDALONE_HF_REBLAY
+ ifneq (,$(findstring WITH_STANDALONE_HF_REBLAY,$(APP_CFLAGS)))
+     SRC_STANDALONE = hf_reblay.c

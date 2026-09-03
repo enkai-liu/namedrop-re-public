@@ -1,0 +1,6 @@
+[submodule "third_party/owl"]
+	path = third_party/owl
+	url = https://github.com/seemoo-lab/owl
+[submodule "third_party/opendrop"]
+	path = third_party/opendrop
+	url = https://github.com/seemoo-lab/opendrop

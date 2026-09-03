@@ -1,0 +1,47 @@
+diff --git a/opendrop/server.py b/opendrop/server.py
+index 9fe3f80..bbf8929 100644
+--- a/opendrop/server.py
++++ b/opendrop/server.py
+@@ -162,9 +162,30 @@ class AirDropServerHandler(BaseHTTPRequestHandler):
+         self._set_response(len(body))
+         self.wfile.write(body)
+ 
++    def _read_request_body(self):
++        """Read a request body honoring either Content-Length or chunked
++        Transfer-Encoding. Modern AirDrop senders POST /Discover and /Ask with
++        `Transfer-Encoding: chunked` and NO Content-Length; stock OpenDrop only
++        handled Content-Length here and crashed (int(None)). (namedrop-re)"""
++        te = self.headers.get("Transfer-Encoding", "").lower()
++        if "chunked" in te:
++            data = bytearray()
++            while True:
++                size_line = self.rfile.readline().strip()
++                if not size_line:
++                    continue
++                size = int(size_line.split(b";")[0], 16)  # ignore chunk extensions
++                if size == 0:
++                    self.rfile.readline()  # consume trailing CRLF (no trailers expected)
++                    break
++                data += self.rfile.read(size)
++                self.rfile.readline()  # consume CRLF after each chunk
++            return bytes(data)
++        cl = self.headers.get("Content-Length")
++        return self.rfile.read(int(cl)) if cl is not None else b""
++
+     def handle_discover(self):
+-        content_length = int(self.headers["Content-Length"])
+-        post_data = self.rfile.read(content_length)
++        post_data = self._read_request_body()
+ 
+         AirDropUtil.write_debug(
+             self.config, post_data, "receive_discover_request.plist"
+@@ -222,8 +243,7 @@ class AirDropServerHandler(BaseHTTPRequestHandler):
+         self.wfile.write(discover_answer_binary)
+ 
+     def handle_ask(self):
+-        content_length = int(self.headers["Content-Length"])
+-        post_data = self.rfile.read(content_length)
++        post_data = self._read_request_body()
+ 
+         AirDropUtil.write_debug(self.config, post_data, "receive_ask_request.plist")
+ 
