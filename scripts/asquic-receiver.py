@@ -90,7 +90,7 @@ def _our_listener_uuid():
     Must never be hardcoded: it rotates, and a stale copy here would answer /Hello with an identity
     that no longer matches the one the bump committed.
     """
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snap-identity.json")
+    path = os.path.join(REPO, "scratchpad", "snap-identity.json")
     try:
         with open(path) as fh:
             return json.load(fh)["bonjour_listener_uuid"].upper()

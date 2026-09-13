@@ -12,13 +12,22 @@ sudo apt-get install -y \
   python3 python3-pip python3-venv
 
 echo "== Fetching OWL + OpenDrop (third_party/) =="
-# If they were added as submodules, init them; otherwise clone fresh. Either way you are
-# pulling external code that runs as root — review it before trusting it.
-git submodule update --init --recursive 2>/dev/null || true
-[ -d third_party/owl/.git ] || [ -e third_party/owl/CMakeLists.txt ] || \
-  git clone https://github.com/seemoo-lab/owl third_party/owl
-[ -d third_party/opendrop/.git ] || [ -e third_party/opendrop/setup.py ] || \
-  git clone https://github.com/seemoo-lab/opendrop third_party/opendrop
+# OWL and OpenDrop are submodules pinned to the commits patches/ was written against.
+# We deliberately do NOT clone them fresh as a fallback: upstream HEAD may not take our
+# patches, and a silently-wrong tree is harder to debug than a clear error here. Note the
+# submodules' own .git is a FILE, not a directory, so test for tracked content instead.
+# Either way you are pulling external code that runs as root — review it before trusting it.
+git submodule update --init --recursive || true
+
+missing=""
+[ -e third_party/owl/CMakeLists.txt ] || missing="$missing third_party/owl"
+[ -e third_party/opendrop/setup.py ]  || missing="$missing third_party/opendrop"
+if [ -n "$missing" ]; then
+  echo "ERROR: submodule(s) not populated:$missing" >&2
+  echo "  If you downloaded the GitHub ZIP: it omits submodules — use 'git clone' instead." >&2
+  echo "  If you already have a clone:      git submodule update --init --recursive" >&2
+  exit 1
+fi
 
 echo "== Patching OWL (active->passive monitor fallback) =="
 # The AR9271 (ath9k_htc) only supports PASSIVE monitor mode; stock OWL demands ACTIVE

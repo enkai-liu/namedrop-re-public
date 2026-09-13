@@ -1,28 +1,36 @@
 # namedrop-re
 
-An implementation of Apple's **NameDrop** protocol — bump a Proxmark3 with an iPhone, get the
-iPhone's contact card back over QUIC, and send one in return.
+An implementation of Apple's **NameDrop** protocol — bump a Proxmark3 or an Android phone
+with an iPhone, get the iPhone's contact card back over QUIC, and send one in return.
 
-**Hardware:** Proxmark3, **AR9271 USB Wi-Fi adapter**, any Ubuntu 24.04 machine.
+**Hardware:** **AR9271 USB Wi-Fi adapter**, any Ubuntu 24.04 machine, and one NFC card:
 
-If you want the protocol first, skip to **[How NameDrop actually works](#how-namedrop-actually-works)**.
+| NFC card | Setup |
+|---|---|
+| **Proxmark3** (Iceman fork) | [firmware/README.md](firmware/README.md) |
+| **Android phone**, unrooted (tested: Pixel 9) | [android/namedrop-card/README.md](android/namedrop-card/README.md) |
+
+The phone or Proxmark3 only answers the NFC bump. The contact exchange itself runs over AWDL
+on the Linux machine in both cases.
+
+If you want to read about the protocol, skip to **[How NameDrop actually works](#how-namedrop-actually-works)**.
 
 ---
 
 ## Setup
 
 ```bash
-git clone --recurse-submodules https://github.com/enkai-liu/namedrop-re-public.git namedrop-re
+git clone https://github.com/enkai-liu/namedrop-re-public.git namedrop-re
 cd namedrop-re
-./scripts/setup-linux.sh      # apt deps, build OWL, apply patches, create .venv
-./scripts/check-hardware.sh   # PASS/FAIL before you sink time into OWL
+./scripts/setup-linux.sh      # apt deps, build OWL, apply patches for OWL and OpenDrop, create .venv
+./scripts/check-hardware.sh
 ```
 
-`setup-linux.sh` is idempotent and applies the patches in `patches/`:
+`setup-linux.sh` is safe to re-run and applies the patches in `patches/`:
 
 | Patch | Fixes |
 |---|---|
-| `owl-passive-monitor-fallback` | The AR9271 (`ath9k_htc`) supports only *passive* monitor mode; stock OWL demands active and aborts. |
+| `owl-passive-monitor-fallback` | The AR9271 (`ath9k_htc`) supports only *passive* monitor mode while OWL demands active by default and aborts. |
 | `opendrop-py312-zeroconf-compat` | Python 3.12 dropped `key_file`/`cert_file` from `HTTPSConnection`; modern zeroconf needs an `update_service` listener. |
 | `opendrop-chunked-receive` | Modern senders POST chunked with no `Content-Length`; stock OpenDrop crashed on `int(None)`. |
 | `opendrop-discover-capability-fields` | `/Discover` must return the capability fields a real receiver does. |
@@ -33,35 +41,50 @@ cd namedrop-re
 
 ### 1. Mint one SNAP identity
 
-Everything downstream keys off this. Do it once per rig, **first**.
+Do this **first**: the firmware header, the TLS cert, and the mDNS name are all minted
+from it. One identity is good for as many sessions and bumps as you like — re-running the
+script reuses the existing `scratchpad/snap-identity.json` rather than minting a new one.
+`--regenerate` forces a new one — which means reflashing and restarting the advertiser, since
+otherwise iOS resolves a UUID nobody is serving, which results in the share page appearing
+but getting stuck at Share. That last part still needs verification.
 
 ```bash
 .venv/bin/python scripts/build-snap-serverinfo.py \
-  --header ~/proxmark3/armsrc/Standalone/hf_namedrop_snap.h
+  --header ~/proxmark3/armsrc/Standalone/hf_namedrop_snap.h    # Android only: --header ""
 ```
 
-Writes the private half to `snap-identity.json` (gitignored, mode 0600).
+Writes the private half to `scratchpad/snap-identity.json` (gitignored, mode 0600).
 
-The same identity feeds two places that must stay in sync:
+The same identity is used in several places and must stay in sync:
 
 | Artifact | Used by |
 |---|---|
 | `firmware/hf_namedrop_snap.h` | the Proxmark3 standalone mode |
-| `snap-identity.json` | the mDNS instance name, and the TLS cert's key |
+| `android/namedrop-card/.../SnapBlobs.java` | the Android card app (gitignored) |
+| `scratchpad/snap-identity.json` | the mDNS instance name, and the TLS cert's key |
 
-Regenerate one half without the other and iOS resolves a UUID nobody is serving — which on
-the wire is indistinguishable from the bump never working.
+### 2. Set up the card: Proxmark3 *or* Android
 
-### 2. Build and flash the Proxmark3
-
-See **[firmware/README.md](firmware/README.md)**. Short version: apply
+**Proxmark3:** see **[firmware/README.md](firmware/README.md)**. Short version: apply
 `patches/proxmark3-standalone-namedrop.patch` to an Iceman checkout, drop in
 `firmware/hf_namedrop.c`, set `STANDALONE=HF_NAMEDROP`, `make && ./pm3-flash-all`.
+
+**Android phone:** see **[android/namedrop-card/README.md](android/namedrop-card/README.md)**.
+Short version: `./gradlew assembleDebug`, `adb install`, open the app, and keep it in the
+foreground. Rebuild it whenever the identity changes.
 
 ### 3. Make a certificate carrying SNAP key 1
 
 Self-signed. Subject and issuer are irrelevant — a real iPhone's own cert leaves both empty.
-The only thing that matters is that the public key is the P-256 key in `snap-identity.json`.
+The only thing that matters is that the public key is the P-256 key in `scratchpad/snap-identity.json`.
+
+```bash
+./scripts/mint-snapkey-cert.sh
+```
+
+Writes `scratchpad/asquic-keys/snapkey-cert.pem` and `snapkey-key.pem` (key mode 0600), built
+from the identity's own private key. It exits non-zero rather than leave a cert whose public
+key differs from SNAP key 1. Re-run it after every `--regenerate`.
 
 ### 4. Bring up AWDL and both receivers
 
@@ -71,7 +94,8 @@ Three terminals:
 sudo ./scripts/awdl-up.sh                                    # 1. AWDL; foreground, Ctrl-C to stop
 .venv/bin/python scripts/mdns-advertise.py -i awdl0           # 2. publishes <uuid>._asquic._udp
 .venv/bin/python scripts/asquic-receiver.py \
-    --cert snapkey-cert.pem --key snapkey-key.pem             # 3. serves the QUIC/HTTP-3
+    --cert scratchpad/asquic-keys/snapkey-cert.pem \
+    --key  scratchpad/asquic-keys/snapkey-key.pem              # 3. serves the QUIC/HTTP-3
 ```
 
 **Both receivers are required.** `asquic-receiver.py` speaks the QUIC the bump routes to, but
@@ -94,6 +118,10 @@ the way the iPhone would.
 
 Unlock the iPhone, hold its top edge to the Proxmark3 antenna, tap **Share** on the NameDrop
 prompt. The card you send back is `samples/contact.vcf` — override with `--vcard`.
+
+With an Android phone, stay on the iPhone's **home screen** (no share sheet), and tap the
+iPhone to the **middle** of the phone's back every few seconds rather than holding it there.
+See [the app's README](android/namedrop-card/README.md#4-bump).
 
 ### Two reliability fixes you would otherwise rediscover
 
@@ -163,7 +191,8 @@ Each was load-bearing, and each contradicts the obvious model:
    certificate needs no name because the NFC exchange already said which key to expect.
 
 Because the bind is cryptographic rather than physical, the device answering the NFC need not
-be the device answering the QUIC. That is what makes a future phone-as-card port viable.
+be the device answering the QUIC. That is what makes the Android card work: the phone answers
+the bump, and Linux answers the QUIC.
 
 ### The ECP line is the least isolated claim here
 
@@ -172,11 +201,12 @@ NameDrop-TCI frame, stopped answering iOS's NDEF read, and shortened the ECP bur
 three could be the load-bearing one, and the order of the two frames has never been varied.
 [firmware/hf_namedrop.c](firmware/hf_namedrop.c) names the control arms worth running.
 
-### Why a Proxmark3 and not a PN532
+### Why a Proxmark3 or a phone, and not a PN532
 
 A bump is an ISO-DEP *card* transaction. A PN532 is a reader, and a reader can never be
 selected — emit ECP from one and the iPhone plays the warp, then hangs at "Keep Holding
-Nearby to Share" forever. See [docs/hardware.md](docs/hardware.md).
+Nearby to Share" forever. Android's host card emulation *is* a card. An unprivileged app can
+also emit ECP by toggling reader mode on and off. See [docs/hardware.md](docs/hardware.md).
 
 ---
 
@@ -184,6 +214,7 @@ Nearby to Share" forever. See [docs/hardware.md](docs/hardware.md).
 
 ```
 firmware/    Proxmark3 standalone mode + its patches (GPL-3.0)
+android/     namedrop-card: the Android phone as the NFC card
 scripts/     setup, AWDL bring-up, identity minting, the two receivers, preflight
 src/namedrop pure-logic helpers: ECP frame builder, vCard builder
 docs/        hardware, the ECP frame reference

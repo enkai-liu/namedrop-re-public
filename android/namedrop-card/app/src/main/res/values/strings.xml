@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NameDrop Card</string>
+    <string name="service_desc">NameDrop card</string>
+    <string name="aid_boop">Apple com.apple.boop (prefix)</string>
+    <string name="aid_ndef">NFC Forum Type 4 tag (refused)</string>
+</resources>

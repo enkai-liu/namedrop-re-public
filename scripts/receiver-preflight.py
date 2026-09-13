@@ -24,6 +24,10 @@ except ImportError:
     sys.exit(2)
 
 SERVICE = "_airdrop._tcp.local."
+# The record the bump actually resolves. Per evidence take snap-uuid-is-asquic-instance-20260814
+# the listenerUUID is the _asquic INSTANCE name, so checking _airdrop alone can PASS a rig whose
+# _asquic record was never published -- which is exactly the failure that costs a take.
+SERVICE_ASQUIC = "_asquic._udp.local."
 
 
 def ifindex(name):
@@ -63,6 +67,12 @@ def main():
         "bonjourListenerUUID in snap-identity.json -- the UUID the PM3 hands "
         "the phone over NFC. A mismatch here means the bump has no peer to resolve.",
     )
+    ap.add_argument(
+        "--allow-missing-asquic",
+        action="store_true",
+        help="do not FAIL when the _asquic instance is absent. For deliberately running the "
+        "mdns-advertise.py --no-asquic control arm, where its absence is the point.",
+    )
     args = ap.parse_args()
 
     idx = ifindex(args.interface)
@@ -101,7 +111,9 @@ def main():
 
     zc = Zeroconf(interfaces=[str(addr)], ip_version=IPVersion.V6Only)
     collector = Collector()
+    asquic = Collector()
     ServiceBrowser(zc, SERVICE, collector)
+    ServiceBrowser(zc, SERVICE_ASQUIC, asquic)
     time.sleep(args.seconds)
     zc.close()
 
@@ -129,6 +141,20 @@ def main():
         )
         ok = ok or mine
 
+    # The _asquic instance is the bind the bump resolves after the Share tap. mdns-advertise.py
+    # names it host_name.upper(), so compare on the instance label, not the SRV target.
+    want = None if expect is None else "%s.%s" % (expect.upper(), SERVICE_ASQUIC)
+    asquic_ok = False
+    print("_asquic._udp instances:")
+    if not asquic.found:
+        print("  (none)")
+    for name, info in sorted(asquic.found.items()):
+        mine = want is not None and name.lower() == want.lower()
+        print("  %s %s\n      SRV -> %s  port %s"
+              % ("<== OURS" if mine else "        ", name,
+                 (info.server or "").rstrip("."), info.port))
+        asquic_ok = asquic_ok or mine
+
     if expect is None:
         print("PASS(weak): something is advertising, but no expected host to match against.")
         return 0
@@ -137,8 +163,23 @@ def main():
         print("      That UUID is the bind -- the PM3 hands it to the phone as SNAP key 2,")
         print("      and sharingd resolves the bumped peer by exactly this hostname.")
         return 1
+    if not asquic_ok:
+        if args.allow_missing_asquic:
+            print("PASS(weak): _airdrop matches, and %s is absent as --allow-missing-asquic"
+                  % SERVICE_ASQUIC)
+            print("      permits. The bump has nothing to resolve after Share; this is the")
+            print("      --no-asquic control arm, not a rig you should expect to complete.")
+            return 0
+        print("FAIL: no %s instance named %s" % (SERVICE_ASQUIC, expect.upper()))
+        print("      _airdrop looks right, so this rig LOOKS healthy -- but the bump resolves")
+        print("      the listenerUUID as the _asquic instance name, and that is missing. The")
+        print("      usual cause is mdns-advertise.py finding no SNAP identity, leaving")
+        print("      host_name None, which makes _register_asquic skip the record entirely.")
+        print("      Pass --allow-missing-asquic if you are running the --no-asquic arm.")
+        return 1
 
-    print("PASS: we are discoverable as %s.local -- safe to spend a take." % expect)
+    print("PASS: discoverable as %s.local and %s -- safe to spend a take."
+          % (expect, want))
     return 0
 
 

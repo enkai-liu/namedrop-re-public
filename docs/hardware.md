@@ -6,7 +6,7 @@ macOS can't do this, and stock Android has no API for the AWDL/QUIC leg.
 | Part | Cost | Role |
 |---|---|---|
 | **Atheros AR9271 USB Wi-Fi** | ~$20 | AWDL. The one part with no substitute. |
-| **Proxmark3** | ~$50–90 | The card. Answers the NFC bump. |
+| **Proxmark3** *or* an **Android phone** | ~$50–90 / — | The card. Answers the NFC bump. |
 | **Linux PC / Raspberry Pi** | — | Runs OWL and the two receiver processes. |
 | **iPhone, iOS 17+** | — | The peer. |
 
@@ -52,6 +52,22 @@ but they are not on this path.
 Any Proxmark3 that runs the [Iceman fork](https://github.com/RfidResearchGroup/proxmark3)
 works. See [../firmware/README.md](../firmware/README.md) to build and flash the standalone
 mode.
+
+## NFC — or an Android phone is the card
+
+An unrooted Android phone can replace the Proxmark3. Host card emulation makes it a
+selectable ISO-DEP card, and the reader-mode polling-loop annotation puts the ECP frames on
+the air. See [../android/namedrop-card/README.md](../android/namedrop-card/README.md).
+
+| Requirement | Why |
+|---|---|
+| Android 15+ (API 35), NFC HCE | The card half. |
+| NFC controller that honours `READER_TECH_A_POLLING_LOOP_ANNOTATION` | Without ECP emission, iOS reads the phone as a plain tag. **Tested: Pixel 9** (ST54L, Android 16 and 17). Other phones are untested. |
+| No root | The app toggles between emitting and being a card. Only doing both at once needs privilege. |
+
+The phone does the NFC half only. It still needs the AR9271 + Linux machine for AWDL and QUIC.
+
+Pixel antenna placement differs from an iPhone's: the coil is **mid-body** on the back.
 
 > Avoid the **ACR122U**. It is PN532-based, but its CCID firmware wraps the chip and blocks
 > the raw framing this needs.

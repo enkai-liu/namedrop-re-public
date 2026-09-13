@@ -6,7 +6,7 @@
 # Usage:
 #   ./scripts/check-hardware.sh
 #
-# The card in this rig is a Proxmark3, which is checked with the pm3 client, not from here.
+# The card (a Proxmark3, or an Android phone running android/namedrop-card) is not checked from here.
 set -uo pipefail
 
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; }

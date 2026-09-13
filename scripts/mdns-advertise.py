@@ -299,7 +299,8 @@ def _default_host_name():
     the phone over NFC, which is how the sender knows which mDNS peer is the bumped one.
     So default to the very UUID baked into the PM3's SNAP blob.
     """
-    ident = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snap-identity.json")
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ident = os.path.join(repo, "scratchpad", "snap-identity.json")
     try:
         import json
 

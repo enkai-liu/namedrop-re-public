@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  shouldDefaultToObserveMode=false: in observe mode the NFC controller listens without
+  replying, and a card that does not reply can never be selected.
+
+  Category "other", not "payment": payment needs default-payment status and extra UX.
+
+  No polling-loop filters on purpose. A registered pattern makes the controller claim
+  matching frames and report them to nobody, it persists while the app is merely
+  installed, and the card path does not need it.
+-->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/service_desc"
+    android:requireDeviceUnlock="false"
+    android:requireDeviceScreenOn="false"
+    android:shouldDefaultToObserveMode="false">
+
+    <!-- com.apple.boop: A0 00 00 08 58 (Apple's RID) + 04 + "OSE.CH." + 01.
+         ⚠️ The prefix filter must NOT carry a trailing '*'. AOSP appends it, so
+         "A000000858*" becomes "A000000858**", fails isValidAid(), and is dropped
+         silently: the service still registers, with an empty AID group. -->
+    <aid-group
+        android:category="other"
+        android:description="@string/aid_boop">
+        <aid-filter android:name="A000000858044F0100" />
+        <aid-prefix-filter android:name="A000000858" />
+    </aid-group>
+
+    <!-- The NDEF Type 4 application, claimed only so it can be REFUSED with 6A82 (see
+         NameDropHceService). An iPhone on its home screen runs Background Tag Reading
+         against any card it meets; answer it and iOS finishes as a tag read and never
+         escalates to NameDrop. -->
+    <aid-group
+        android:category="other"
+        android:description="@string/aid_ndef">
+        <aid-filter android:name="D2760000850101" />
+        <aid-filter android:name="D2760000850100" />
+    </aid-group>
+
+</host-apdu-service>

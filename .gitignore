@@ -40,3 +40,13 @@ snap-identity.json
 *.cms
 key.raw
 kc_*.bin
+
+# Android card app. SnapBlobs.java is generated per identity by build-snap-serverinfo.py,
+# so a committed copy would be someone else's identity with no private half.
+android/**/build/
+android/**/.gradle/
+android/**/local.properties
+android/namedrop-card/app/src/main/java/com/namedrop/card/SnapBlobs.java
+
+# The _asquic TLS keypair from mint-snapkey-cert.sh. Its private key IS the SNAP identity's.
+scratchpad/asquic-keys/
