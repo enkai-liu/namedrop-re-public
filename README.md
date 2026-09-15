@@ -8,10 +8,10 @@ with an iPhone, get the iPhone's contact card back over QUIC, and send one in re
 | NFC card | Setup |
 |---|---|
 | **Proxmark3** (Iceman fork) | [firmware/README.md](firmware/README.md) |
-| **Android phone**, unrooted (tested: Pixel 9) | [android/namedrop-card/README.md](android/namedrop-card/README.md) |
+| **Android phone**, (I used a Pixel 9) | [android/namedrop-card/README.md](android/namedrop-card/README.md) |
 
-The phone or Proxmark3 only answers the NFC bump. The contact exchange itself runs over AWDL
-on the Linux machine in both cases.
+The phone or Proxmark3 only initiates the NFC bump. The contact exchange itself runs over AWDL
+using the USB Wi-Fi adapter. I am currently working on getting NameDrop working fully on Android.
 
 If you want to read about the protocol, skip to **[How NameDrop actually works](#how-namedrop-actually-works)**.
 
@@ -75,7 +75,7 @@ foreground. Rebuild it whenever the identity changes.
 
 ### 3. Make a certificate carrying SNAP key 1
 
-Self-signed. Subject and issuer are irrelevant — a real iPhone's own cert leaves both empty.
+Self-signed. Subject and issuer do not matter since a real iPhone's own cert leaves both empty.
 The only thing that matters is that the public key is the P-256 key in `scratchpad/snap-identity.json`.
 
 ```bash
@@ -108,11 +108,9 @@ Before spending a bump, confirm you are actually discoverable:
 .venv/bin/python scripts/receiver-preflight.py    # exit 0 = safe to bump
 ```
 
-This exists because a take once burned 75 seconds of bumping while mDNS was silently dead:
-OWL had restarted, `awdl0` came back with a new ifindex, and the advertiser's socket stayed
-bound to the old scope id. Process alive, socket open, advertising nothing. `ps` and the
-listening socket both look healthy — the only honest check is to browse for your own service
-the way the iPhone would.
+If OWL restarts, `awdl0` comes back with a new ifindex and the advertiser stops publishing,
+even though the process and its socket still look fine. Browsing for your own service is one
+way to check.
 
 ### 5. Bump
 
@@ -120,23 +118,9 @@ Unlock the iPhone, hold its top edge to the Proxmark3 antenna, tap **Share** on 
 prompt. The card you send back is `samples/contact.vcf` — override with `--vcard`.
 
 With an Android phone, stay on the iPhone's **home screen** (no share sheet), and tap the
-iPhone to the **middle** of the phone's back every few seconds rather than holding it there.
-See [the app's README](android/namedrop-card/README.md#4-bump).
-
-### Two reliability fixes you would otherwise rediscover
-
-1. **Close the QUIC connection after `/Exchange`.** Answering 200 and letting the connection
-   dangle to idle timeout breaks the *next* bump. Send `CONNECTION_CLOSE` about a second later
-   (`--exchange-close-delay 0` restores the old behaviour as a control arm).
-2. **Send mDNS responses *from* port 5353** (RFC 6762 §6.7), and re-announce every ~2 s,
-   multicast **and** unicast. We inject through a passive-monitor vif, so nothing we send is
-   retransmitted at L2 — repetition is the only retransmit available. Responses sent from an
-   ephemeral port are discarded on arrival, which is the nastiest version of this bug: the
-   packets really are on the wire, so every "is it transmitting?" check passes.
-
-Reflashing between bumps is **not** necessary. "iOS dedups on our listener UUID so repeat
-bumps need a fresh identity" was tested and refuted — one identity completed 8 exchanges, with
-iOS echoing that very `SenderID` back at us.
+iPhone's top edge to the phone's **NFC antenna** every few seconds rather than holding it
+there. On a Pixel the antenna is in the **middle** of the back, and I found it works best with
+the Pixel on top of the iPhone. See [the app's README](android/namedrop-card/README.md#4-bump).
 
 ---
 
@@ -173,26 +157,12 @@ HTTP3 → POST /Hello → 200 · POST /Ask → 200 · POST /Exchange {their vCar
 
 </details>
 
-### Three mechanism facts
+### Why no Apple trust is needed
 
-Each was load-bearing, and each contradicts the obvious model:
-
-1. **The bind is the `_asquic._udp` instance name** — literally the `bonjourListenerUUID`
-   from SNAP ServerInfo key 2. Not the SRV hostname, not `_airdrop._tcp`.
-2. **The transport is QUIC + HTTP/3.** Every attempt before this stalled after `/Discover`,
-   waiting for an `/Ask` on a transport the bump never uses.
-3. **The TLS gate is a key binding, not Apple trust.** The certificate must carry the same
-   P-256 key handed over in SNAP ServerInfo key 1 — which you already hold, because you
-   minted it. A self-signed cert built from that key is accepted; a random-key one is
-   rejected. **No Apple-signed validation record, no keychain extraction, no Mac.**
-
-   The binding is **symmetric**: the iPhone's own `_asquic` certificate carries the exact key
-   it committed in that same bump, with an **empty subject and empty issuer**. The
-   certificate needs no name because the NFC exchange already said which key to expect.
-
-Because the bind is cryptographic rather than physical, the device answering the NFC need not
-be the device answering the QUIC. That is what makes the Android card work: the phone answers
-the bump, and Linux answers the QUIC.
+The TLS gate is a key binding, not a certificate chain. iOS accepts any certificate whose
+public key matches the P-256 key committed in SNAP ServerInfo key 1, and you hold that key
+because you minted it. A self-signed cert built from it is accepted; a random-key one is
+rejected. **No Apple-signed validation record, no keychain extraction, no Mac.**
 
 ### The ECP line is the least isolated claim here
 
@@ -236,13 +206,7 @@ a private capture archive that is not published; the finding is stated where it 
 | Proxmark3 | [RfidResearchGroup/proxmark3](https://github.com/RfidResearchGroup/proxmark3) |
 | QUIC / HTTP-3 | [aiortc/aioquic](https://github.com/aiortc/aioquic) |
 
-The QUIC/HTTP-3 application protocol (`/Hello` → `/Ask` → `/Exchange`) is not publicly
-documented anywhere. It was implemented request-by-request by observing each one and
-answering it.
-
 **Responsible use.** This is interoperability work — letting devices you own share a contact.
-It is not a tool for tracking, de-anonymizing, or harvesting AirDrop users. The known AirDrop
-hashed-identifier leaks are explicitly out of scope.
 
 ## License
 

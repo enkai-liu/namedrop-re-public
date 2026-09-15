@@ -76,8 +76,10 @@ passes. See steps 3 and 4 of the [main README](../../README.md#running-a-namedro
   sheet makes the iPhone the *sender*, which is a different flow.
 
 **The tap:**
-- The Pixel's NFC antenna is **mid-body on the back**, not at the top like an iPhone's. Put
-  the iPhone's top edge there.
+- Line the iPhone's top edge up with the Android phone's **NFC antenna**. On a Pixel that is
+  **mid-body on the back**, not at the top like an iPhone's. Other phones vary.
+- I found it works best with the **Pixel on top**: iPhone face-up on the table, Pixel's back
+  lowered onto its top edge.
 - **Tap, don't park.** Touch, lift a few cm, and come back every 3–5 s. The phone is only
   selectable in the 2 s quiet window between 0.5 s emission bursts.
 - When the NameDrop prompt appears, tap **Share**.
