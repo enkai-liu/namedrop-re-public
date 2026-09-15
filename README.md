@@ -3,6 +3,8 @@
 An implementation of Apple's **NameDrop** protocol — bump a Proxmark3 or an Android phone
 with an iPhone, get the iPhone's contact card back over QUIC, and send one in return.
 
+https://github.com/user-attachments/assets/d89eb796-a2ed-4275-a1fc-01187c6cd0de
+
 **Hardware:** **AR9271 USB Wi-Fi adapter**, any Ubuntu 24.04 machine, and one NFC card:
 
 | NFC card | Setup |
