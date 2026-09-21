@@ -1,7 +1,7 @@
-# Proxmark3 standalone modes
+# Proxmark3 standalone mode
 
-Two custom [Iceman-fork](https://github.com/RfidResearchGroup/proxmark3) standalone modes.
-They run entirely on the PM3's ARM — no USB in the timing loop — because the NFC bump's
+A custom [Iceman-fork](https://github.com/RfidResearchGroup/proxmark3) standalone mode.
+It runs entirely on the PM3's ARM — no USB in the timing loop — because the NFC bump's
 timing budget (a 38.66 ms frame-waiting time, activations ~19–45 ms apart) is far tighter
 than a host round-trip.
 
@@ -21,7 +21,7 @@ than a host round-trip.
 ```
 
 That writes the C header into your PM3 checkout, keeps a copy at `firmware/hf_namedrop_snap.h`,
-and saves the private half to `snap-identity.json` at the repo root (gitignored, mode 0600).
+and saves the private half to `scratchpad/snap-identity.json` (gitignored, mode 0600).
 
 **The identity must be shared with whatever answers the QUIC.** After the bump, iOS resolves
 `<bonjourListenerUUID>._asquic._udp` and requires the TLS certificate to carry SNAP key 1 —
@@ -49,8 +49,6 @@ make clean && make -j
 
 The patch registers `HF_NAMEDROP` in `armsrc/Standalone/Makefile.hal` and `Makefile.inc`.
 Only one standalone mode fits on the device at a time.
-
-`firmware/patches/iso14443a-namedrop.patch` patches the PM3's ISO14443-A layer itself — apply it too, or the card cannot hold the timing the transaction needs.
 
 ## 3. Run a take
 

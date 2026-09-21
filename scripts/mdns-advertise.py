@@ -1,273 +1,28 @@
 #!/usr/bin/env python3
-"""Advertise us on awdl0 so a bump can find us -- and capture the legacy HTTPS leg.
+"""Advertise us on awdl0 so a bump can find us.
 
-THIS IS LOAD-BEARING FOR NAMEDROP, despite the AirDrop machinery below. After the NFC
-handshake iOS resolves `<bonjourListenerUUID>._asquic._udp`, and this is what publishes that
+After the NFC handshake iOS resolves `<bonjourListenerUUID>._asquic._udp`, and this is what publishes that
 record (from snap-identity.json, so it matches the UUID the card handed over). Without it the
 bump completes at the NFC layer and then has nowhere to go.
 
 Run it alongside scripts/asquic-receiver.py, which serves the QUIC/HTTP-3 the bump routes to.
 
-It is also a full AirDrop receiver over the legacy `_airdrop._tcp`/HTTPS path.
+It also runs OpenDrop's stock AirDrop receiver on the legacy `_airdrop._tcp`/HTTPS path.
 
-We are the RECEIVER, so we own the TLS private key and terminate the AWDL HTTPS
-session -> we see the *plaintext* /Discover, /Ask and /Upload a working modern
-sender emits. This wraps OpenDrop's own AirDropServerHandler with a transparent
-tee over self.rfile: it records each request's raw plaintext body + headers to a
-uniquely-named file (so Mac / Pixel / iPad captures never clobber one another),
-while the underlying handler still parses/extracts exactly as stock OpenDrop.
-
-Real run (needs owl up on awdl0):
+Run (needs owl up on awdl0):
     sudo ./scripts/awdl-up.sh            # bring up awdl0 (AR9271, ch6)
-    .venv/bin/python scripts/mdns-advertise.py -i awdl0 -n "namedrop-re"
-  then AirDrop a file TO "namedrop-re" from the Mac / Pixel / iPad.
-
-Self-test (no hardware, loopback):
-    .venv/bin/python scripts/mdns-advertise.py --selftest
+    .venv/bin/python scripts/mdns-advertise.py -i awdl0
 """
 import argparse
 import ipaddress
 import logging
 import os
 import socket
-import sys
 import threading
 import time
 
 from opendrop import server as od_server
 from opendrop.config import AirDropConfig
-
-logger = logging.getLogger("capture")
-
-CAP_DIR = None
-_counter = [0]
-_lock = threading.Lock()
-
-
-class TeeReader:
-    """Wrap a readable file object, appending every consumed byte to .buf.
-
-    Transparent: the wrapped handler reads exactly as before (readline/read for
-    chunked bodies, read(n) for Content-Length bodies); we just also keep a copy.
-    """
-
-    def __init__(self, inner):
-        self.inner = inner
-        self.buf = bytearray()
-
-    def read(self, *a, **k):
-        d = self.inner.read(*a, **k)
-        if d:
-            self.buf += d
-        return d
-
-    def readline(self, *a, **k):
-        d = self.inner.readline(*a, **k)
-        if d:
-            self.buf += d
-        return d
-
-    def __getattr__(self, name):
-        return getattr(self.inner, name)
-
-
-def _drain_chunked(rfile):
-    """Read a full HTTP chunked body into bytes (no Content-Length case).
-
-    Raises ConnectionError if the peer closes before the terminating zero-chunk.
-    An empty readline()/short read means EOF, NOT a blank line — without this guard
-    a mid-stream drop (common on the lossy passive-monitor AWDL link) would spin
-    this loop forever on b'', hanging the whole (non-threaded) server.
-    """
-    data = bytearray()
-    while True:
-        line = rfile.readline()
-        if line == b"":  # EOF: peer closed before the 0-chunk
-            raise ConnectionError(
-                "chunked body truncated: connection closed before terminating 0-chunk"
-            )
-        size_line = line.strip()
-        if not size_line:  # stray blank line between chunks
-            continue
-        size = int(size_line.split(b";")[0], 16)
-        if size == 0:
-            rfile.readline()  # trailing CRLF
-            break
-        chunk = rfile.read(size)
-        data += chunk
-        if len(chunk) < size:  # EOF part-way through a chunk
-            raise ConnectionError(
-                "chunked body truncated: connection closed mid-chunk (%d/%d bytes)"
-                % (len(chunk), size)
-            )
-        rfile.readline()  # CRLF after each chunk
-    return bytes(data)
-
-
-def _dvzip_to_cpio(raw):
-    """Reassemble a modern AirDrop `application/x-dvzip` payload into the cpio
-    archive inside it. dvzip framing = a sequence of [4-byte big-endian length]
-    [zlib stream] blocks; concatenating the inflated blocks yields a standard
-    ODC ('070707') cpio archive. Returns the cpio bytes, or None if `raw` is not
-    dvzip-framed. (namedrop-re: RE'd from a real macOS /Upload, 2026-07-08)"""
-    import struct
-    import zlib
-
-    if len(raw) < 6 or raw[4:6] != b"\x78\x9c":  # 4-byte len then zlib header
-        return None
-    off = 0
-    out = bytearray()
-    try:
-        while off + 4 <= len(raw):
-            (ln,) = struct.unpack(">I", raw[off:off + 4])
-            off += 4
-            out += zlib.decompress(raw[off:off + ln])
-            off += ln
-    except Exception as e:
-        logger.warning("dvzip reassembly failed at offset %d: %s", off, e)
-        return None
-    return bytes(out)
-
-
-def _try_extract(raw, stamp):
-    """Extract `raw` into CAP_DIR. Handles modern AirDrop dvzip (length-prefixed
-    zlib blocks wrapping a cpio) by reassembling first, then hands the result to
-    libarchive (auto-detects zip/cpio/tar/gz/...). Returns extracted entry names,
-    or [] if it can't be read. Logs leading magic to identify unknown containers."""
-    magic = raw[:8]
-    logger.info("upload payload %d bytes, magic=%s (%r)", len(raw), magic.hex(), magic)
-    payload = _dvzip_to_cpio(raw)
-    if payload is not None:
-        logger.info("dvzip -> reassembled %d-byte cpio (magic %r)", len(payload), payload[:6])
-    else:
-        payload = raw
-    try:
-        import libarchive
-    except Exception as e:  # pragma: no cover
-        logger.warning("libarchive unavailable: %s", e)
-        return []
-    names = []
-    try:
-        with libarchive.memory_reader(payload) as archive:
-            for entry in archive:
-                names.append(entry.pathname)
-                if entry.isdir:
-                    continue
-                # write the entry out so a successfully-parsed payload lands
-                try:
-                    out = os.path.join(CAP_DIR, os.path.basename(entry.pathname) or (stamp + ".entry"))
-                    with open(out, "wb") as f:
-                        for blk in entry.get_blocks():
-                            f.write(blk)
-                except Exception as e:
-                    logger.warning("  entry %s write failed: %s", entry.pathname, e)
-        logger.info("EXTRACTED %d entrie(s): %s", len(names), names)
-    except Exception as e:
-        logger.warning("libarchive could not parse payload: %s", e)
-    return names
-
-
-def _make_capturing_handler(base):
-    class CapturingHandler(base):
-        def handle_upload(self):
-            """Accept ANY /Upload content-type (stock OpenDrop 406s non-cpio before
-            reading the body, so we never saw the dvzip bytes). We drain + save the
-            full payload, try to extract it, and always answer 200 so a modern Mac
-            reports success and we get a clean, complete capture to RE. (namedrop-re)"""
-            ct = self.headers.get("content-type", "").lower()
-            if ct == "application/x-cpio":
-                return super().handle_upload()  # stock cpio path still works
-
-            logger.info("non-cpio /Upload content-type=%s -> draining + capturing", ct)
-            if self.headers.get("expect", "").lower() == "100-continue":
-                self.send_response(100)
-                self.send_header("Content-Length", 0)
-                self.end_headers()
-
-            # Bound the body read: on the lossy AWDL link a sender can vanish
-            # mid-stream. Without a timeout the socket read blocks forever; the
-            # chunked path used to busy-spin on EOF. Time-box it and fail cleanly
-            # so this non-threaded server stays responsive for the next attempt.
-            prev_timeout = self.connection.gettimeout()
-            self.connection.settimeout(30)
-            te = self.headers.get("transfer-encoding", "").lower()
-            try:
-                if "chunked" in te:
-                    raw = _drain_chunked(self.rfile)
-                else:
-                    cl = self.headers.get("content-length")
-                    raw = self.rfile.read(int(cl)) if cl is not None else b""
-            except (socket.timeout, ConnectionError, OSError) as e:
-                logger.warning(
-                    "upload aborted: %s — sender likely dropped on the lossy link; "
-                    "waiting for the next attempt", e
-                )
-                self.close_connection = True
-                return
-            finally:
-                try:
-                    self.connection.settimeout(prev_timeout)
-                except OSError:
-                    pass
-
-            stamp = "%d-upload-payload" % int(time.time())
-            try:
-                raw_path = os.path.join(CAP_DIR, stamp + ".dvzip.raw")
-                with open(raw_path, "wb") as f:
-                    f.write(raw)
-                logger.info("saved raw /Upload payload -> %s", os.path.basename(raw_path))
-            except Exception as e:
-                logger.warning("raw payload save failed: %s", e)
-
-            _try_extract(raw, stamp)
-
-            self.send_response(200)
-            self.send_header("Content-Length", 0)
-            self.send_header("Connection", "close")
-            self.end_headers()
-
-        def do_POST(self):
-            with _lock:
-                _counter[0] += 1
-                idx = _counter[0]
-            try:
-                client = self.client_address[0]
-            except Exception:
-                client = "unknown"
-            path = self.path.lstrip("/").replace("/", "_") or "root"
-            # sortable, collision-free, tells senders apart by client addr
-            stamp = "%d-%03d-%s-%s" % (int(time.time()), idx, path, client.replace(":", "-"))
-
-            # 1) headers + request line straight to disk
-            try:
-                hdr_path = os.path.join(CAP_DIR, stamp + ".headers.txt")
-                with open(hdr_path, "w") as f:
-                    f.write("%s %s %s\n" % (self.command, self.path, self.request_version))
-                    f.write("client=%s\n\n" % (self.client_address,))
-                    f.write(str(self.headers))
-            except Exception as e:
-                print("!! header capture failed:", e, file=sys.stderr, flush=True)
-
-            # 2) tee the raw plaintext body while the stock handler consumes it
-            tee = TeeReader(self.rfile)
-            self.rfile = tee
-            try:
-                super().do_POST()
-            finally:
-                self.rfile = tee.inner
-                try:
-                    body_path = os.path.join(CAP_DIR, stamp + ".body.raw")
-                    with open(body_path, "wb") as f:
-                        f.write(bytes(tee.buf))
-                    print(
-                        "captured %s  %d bytes body -> %s"
-                        % (self.path, len(tee.buf), os.path.basename(body_path)),
-                        flush=True,
-                    )
-                except Exception as e:
-                    print("!! body capture failed:", e, file=sys.stderr, flush=True)
-
-    return CapturingHandler
 
 
 def _describe_service(srv):
@@ -497,14 +252,9 @@ def _unicast_records(srv, info, addr):
 
 
 def run_real(interface, name, model, outdir, flags, host_name, caps=None):
-    global CAP_DIR
-    CAP_DIR = outdir
-    os.makedirs(CAP_DIR, exist_ok=True)
-    # extraction lands received files in cwd; keep them alongside captures
-    os.chdir(CAP_DIR)
-
-    # swap the module-global handler class BEFORE AirDropServer bakes it into httpd
-    od_server.AirDropServerHandler = _make_capturing_handler(od_server.AirDropServerHandler)
+    # OpenDrop lands received files in cwd
+    os.makedirs(outdir, exist_ok=True)
+    os.chdir(outdir)
 
     config = AirDropConfig(
         interface=interface,
@@ -530,7 +280,7 @@ def run_real(interface, name, model, outdir, flags, host_name, caps=None):
         "omitted" if dsf is None else "0x%x" % dsf,
         getattr(config, "supports_contact_exchange", False),
     )
-    print("captures + received files -> %s" % CAP_DIR, flush=True)
+    print("received files -> %s" % outdir, flush=True)
     srv = od_server.AirDropServer(config)
 
     # opendrop builds its Zeroconf as ip_version=V6Only bound to the interface's first IPv6
@@ -597,54 +347,6 @@ def run_real(interface, name, model, outdir, flags, host_name, caps=None):
         srv.start_server()
     except KeyboardInterrupt:
         srv.stop()
-
-
-def run_selftest():
-    """Loopback: drive OpenDrop's own client at our capturing receiver over ::1."""
-    global CAP_DIR
-    import socket
-    import tempfile
-    from opendrop.client import AirDropClient
-
-    CAP_DIR = tempfile.mkdtemp(prefix="airdrop-capture-selftest-")
-    vcard = os.path.abspath("./samples/contact.vcf")
-    if not os.path.exists(vcard):
-        vcard = os.path.join(CAP_DIR, "contact.vcf")
-        with open(vcard, "w") as f:
-            f.write("BEGIN:VCARD\nVERSION:3.0\nFN:Self Test\nEND:VCARD\n")
-    os.chdir(CAP_DIR)
-
-    Handler = _make_capturing_handler(od_server.AirDropServerHandler)
-    rconf = AirDropConfig(interface="lo", computer_name="cap-recv", debug=True)
-    Handler.config = rconf
-    httpd = od_server.HTTPServerV6(("::1", 0), Handler)
-    httpd.socket = rconf.get_ssl_context().wrap_socket(sock=httpd.socket, server_side=True)
-    port = httpd.server_address[1]
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    print("selftest receiver up on [::1]:%d, captures -> %s" % (port, CAP_DIR), flush=True)
-
-    sconf = AirDropConfig(interface="lo", computer_name="cap-send")
-    sconf.interface = None
-    client = AirDropClient(sconf, ("::1", port))
-    socket.setdefaulttimeout(15)
-    print("send_ask ->", client.send_ask(vcard), flush=True)
-    print("send_upload ->", client.send_upload(vcard), flush=True)
-    time.sleep(0.5)
-    httpd.shutdown()
-
-    caps = sorted(os.listdir(CAP_DIR))
-    print("\ncapture dir contents:", flush=True)
-    for c in caps:
-        p = os.path.join(CAP_DIR, c)
-        print("  %6d  %s" % (os.path.getsize(p), c), flush=True)
-    have_ask = any("-Ask-" in c and c.endswith(".body.raw") for c in caps)
-    have_upload = any("-Upload-" in c and c.endswith(".body.raw") for c in caps)
-    landed = os.path.exists(os.path.join(CAP_DIR, "contact.vcf"))
-    ok = have_ask and have_upload and landed
-    print("\nASK body captured=%s  UPLOAD body captured=%s  file landed=%s"
-          % (have_ask, have_upload, landed), flush=True)
-    print("SELFTEST", "PASS" if ok else "FAIL", flush=True)
-    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
@@ -725,7 +427,6 @@ if __name__ == "__main__":
         "injection has none for unicast either.",
     )
     ap.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging")
-    ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
     # configure logging so OpenDrop's own logger (zeroconf announce, mDNS errors,
@@ -735,28 +436,25 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
 
-    if args.selftest:
-        run_selftest()
+    flags = int(args.flags, 0) if args.flags else None
+    if args.host_name == "system":
+        host_name = None
+    elif args.host_name:
+        host_name = args.host_name
     else:
-        flags = int(args.flags, 0) if args.flags else None
-        if args.host_name == "system":
-            host_name = None
-        elif args.host_name:
-            host_name = args.host_name
-        else:
-            host_name = _default_host_name()
-        dsf = args.device_support_flags
-        caps = {
-            "is_airdropable": None if args.no_airdropable else True,
-            "device_support_flags": (
-                None if dsf is None or dsf.lower() == "omit" else int(dsf, 0)
-            ),
-            "supports_contact_exchange": args.supports_contact_exchange,
-            "asquic": not args.no_asquic,
-            "asquic_port": args.asquic_port,
-            "announce_interval": args.announce_interval,
-            "announce_unicast": args.announce_unicast,
-        }
-        run_real(
-            args.interface, args.name, args.model, args.outdir, flags, host_name, caps
-        )
+        host_name = _default_host_name()
+    dsf = args.device_support_flags
+    caps = {
+        "is_airdropable": None if args.no_airdropable else True,
+        "device_support_flags": (
+            None if dsf is None or dsf.lower() == "omit" else int(dsf, 0)
+        ),
+        "supports_contact_exchange": args.supports_contact_exchange,
+        "asquic": not args.no_asquic,
+        "asquic_port": args.asquic_port,
+        "announce_interval": args.announce_interval,
+        "announce_unicast": args.announce_unicast,
+    }
+    run_real(
+        args.interface, args.name, args.model, args.outdir, flags, host_name, caps
+    )

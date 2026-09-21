@@ -45,8 +45,6 @@ import re
 import sys
 import uuid
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scratchpad"))
-
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ---------------------------------------------------------------- CBOR (definite lengths)
@@ -218,7 +216,7 @@ def load_identity(path: str):
     return spki, listener, token6, sig, p
 
 
-def mint_identity(seed_hex: str | None):
+def mint_identity():
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
@@ -357,7 +355,7 @@ def main() -> int:
         print(f"[id  ] REUSING the existing identity at {args.identity}")
         print( "        (pass --regenerate to mint a new one -- then restart the receiver too)")
     else:
-        spki, listener, token6, sig, priv = mint_identity(None)
+        spki, listener, token6, sig, priv = mint_identity()
         print("[id  ] minted a NEW identity"
               + ("" if not os.path.exists(args.identity) else " (--regenerate)"))
         print( "        ** restart scripts/mdns-advertise.py so the SRV hostname matches **")

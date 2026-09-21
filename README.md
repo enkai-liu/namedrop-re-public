@@ -33,11 +33,11 @@ cd namedrop-re
 | Patch | Fixes |
 |---|---|
 | `owl-passive-monitor-fallback` | The AR9271 (`ath9k_htc`) supports only *passive* monitor mode while OWL demands active by default and aborts. |
-| `opendrop-py312-zeroconf-compat` | Python 3.12 dropped `key_file`/`cert_file` from `HTTPSConnection`; modern zeroconf needs an `update_service` listener. |
 | `opendrop-chunked-receive` | Modern senders POST chunked with no `Content-Length`; stock OpenDrop crashed on `int(None)`. |
 | `opendrop-discover-capability-fields` | `/Discover` must return the capability fields a real receiver does. |
-| `opendrop-util-libarchive5` | libarchive-c 5.x changed `ArchiveEntry.__init__`, breaking OpenDrop's archive helper on import-adjacent paths. |
-| `opendrop-vr-identity` | Makes OpenDrop's self-signed vs supplied-identity choice explicit and logged. |
+
+Four more patches from the research phase (OpenDrop sender fixes, a Proxmark3 reader-mode
+patch) live in [patches/unused/](patches/unused/README.md). They are not applied.
 
 ## Running a NameDrop
 
@@ -185,12 +185,12 @@ also emit ECP by toggling reader mode on and off. See [docs/hardware.md](docs/ha
 ## Layout
 
 ```
-firmware/    Proxmark3 standalone mode + its patches (GPL-3.0)
+firmware/    Proxmark3 standalone mode (GPL-3.0)
 android/     namedrop-card: the Android phone as the NFC card
 scripts/     setup, AWDL bring-up, identity minting, the two receivers, preflight
-src/namedrop pure-logic helpers: ECP frame builder, vCard builder
 docs/        hardware, the ECP frame reference
-patches/     OWL + OpenDrop patches (auto-applied by setup-linux.sh)
+patches/     OWL + OpenDrop patches (auto-applied by setup-linux.sh), Proxmark3 Makefile patch
+             patches/unused/: research-phase patches kept for reference, never applied
 samples/     the contact card we send back
 ```
 

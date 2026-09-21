@@ -21,7 +21,6 @@
 # iPhone's AWDL social rotation with the share sheet open; docs/awdl-channel6-verified.md).
 # Once awdl0 is up, in ANOTHER terminal:
 #   ip -6 addr show awdl0                  # confirm fe80::/link-local present
-#   ./.venv/bin/opendrop -i awdl0 find     # browse for the iPhone (share sheet open)
 #   ping6 -I awdl0 <iphone-link-local>     # Milestone B success = replies
 set -euo pipefail
 

@@ -40,27 +40,24 @@ Example (BLE MAC `de:ad:be:ef:69:69`):
 6a 02 89 05 00 01 00 01 de ad be ef 69 69  <CRC-A>
 ```
 
-`src/namedrop/nfc_ecp.py` builds this frame and appends CRC_A. The MAC must match the
+`firmware/hf_namedrop.c` and the Android `EcpEmitter` build this frame. The MAC was meant to match the
 address the phone was expected to hunt for next. (The BLE leg turned out to be a dead end --
 a real bump emits no forgeable AirDrop identity beacon at all -- so nothing in this repo
 advertises it; the field is documented here because the frame carries it.)
 
-> ✅ **CRC ownership RESOLVED (2026-07-06):** we append CRC_A **ourselves** (`append_crc=True`,
-> the default). Confirmed against kormax's proven nfcpy example
-> (`examples/implementations/nfcpy`, verified on a real iPhone 14 Pro Max / iOS 17): it appends
-> `crc16a` in software before `InCommunicateThru`, i.e. the PN532's raw-TX path in this
-> configuration does **not** add CRC_A. Their `crc16a` is byte-for-byte our `crc_a`.
+> **CRC ownership:** the Proxmark3 firmware appends CRC_A itself (`AddCrc14A`); on Android the
+> NFC controller appends it, so `EcpEmitter` passes the 14-byte frame without it.
 >
 > ⚠️ **Still to verify on hardware:** the exact `config`/`subtype` semantics against a capture
 > of two real iPhones. Treat those bytes as the documented starting point, not gospel.
 
-> ✅ **HARDWARE-PROVEN (2026-07-08):** emitting this exact frame from a PN532 (then `namedrop ecp-emit
-> de:ad:be:ef:69:69`) made a live iPhone fire the **NameDrop warp/glow animation**. The frame here
-> is correct as-is — see "Hardware bring-up" and "The NameDrop handshake" below.
+> ✅ **HARDWARE-PROVEN (2026-07-08):** emitting this exact frame from a PN532 (MAC
+> `de:ad:be:ef:69:69`) made a live iPhone fire the **NameDrop warp/glow animation**. The frame here
+> is correct as-is — see "The NameDrop handshake" below.
 
 ## NameDrop frame vs AirDrop frame — don't confuse them
 
-There are **two distinct ECP frames**, and `nfc_ecp.build_namedrop_ecp` already emits the right one.
+There are **two distinct ECP frames**.
 Confirmed against kormax's docs (2026-07-08):
 
 | Frame | Config | TCI | Data | Role |
@@ -172,66 +169,3 @@ it.** ⚠️ **That reframe is dead as stated** — the 6-byte payload is not an
 is nothing in the field to read and escalate to. The framing that survived contact with real data is
 neither: a real bump is an **ISO-DEP card transaction**, and we were never selectable
 (`evidence take session-b-20260802`).
-
-## Emitting it
-
-ECP requires *low-level* control of the NFC frontend (raw frame TX during polling), which
-the high-level Android NFC API does not expose. Confirmed-capable frontends: **PN532**,
-PN5180, ST25R3916(B), MFRC522, plus PC/SC readers. We target the **PN532** (cheap, UART/
-I²C/SPI, well documented) driven from the Pi/Linux box.
-
-The PN532 is driven via **nfcpy** (the `[nfc]` extra), replicating kormax's proven flow.
-`nfc_ecp.emit_loop()` implements it; run it with **`namedrop ecp-emit <ble-mac>`**. The
-per-cycle register sequence (all via nfcpy's PN53x chipset):
-
-```
-sense_tta("106A")                        # energize the field with a normal NFC-A poll
-rf_configuration(0x05, [0xff,0x01,0x00]) # MaxRetries: off (don't step on the broadcast)
-write_register("CIU_BitFraming", 0x00)   # whole-byte TX
-in_communicate_thru(frame, timeout=0.1)  # raw TX; a timeout (errno 0x01) is EXPECTED —
-                                         # ECP is one-way, the phone reacts over BLE/AWDL
-```
-
-nfcpy on Linux may bump the UART baud above 115200, which some cheap PN532 clones can't
-handle (timeout right after the version banner prints). Fix per kormax: set
-`change_baudrate = False` in the installed `nfc/clf/pn532.py`, or use a better UART adapter.
-
-## Hardware bring-up (proven 2026-07-08 — PN532 V3 + CP2102 on the Linux laptop)
-
-The whole path Just Worked, `emit_loop` unmodified. Reproduce:
-
-1. **Wire + DIP.** PN532 DIP → **HSU (UART)**; cross TX/RX; CP2102 `5V`→`VCC`, `GND`→`GND`,
-   `TXD`→`RXD`, `RXD`→`TXD` (see `docs/hardware.md`).
-2. **Plug in.** CP2102 enumerates as USB `10c4:ea60` → **`/dev/ttyUSB0`** (in-kernel `cp210x`,
-   no setup). nfcpy opens it as **`PN532v1.6`**, firmware `32 01 06 07`.
-3. **Fix permissions.** `/dev/ttyUSB0` is `root:dialout` mode 660. The user must be in `dialout`.
-   `sudo usermod -aG dialout <user>` (permanent, **needs a re-login**) + `sudo chmod a+rw
-   /dev/ttyUSB0` (this session, re-run after each replug until the re-login takes effect). Both
-   `sudo` steps must be run by a human at a terminal (a non-interactive agent can't enter the
-   password) — suggest the `! <cmd>` prompt prefix.
-4. **Verify via nfcpy, NOT `nfc-list`.** `nfc-list` says "No NFC device found" because libnfc's
-   autoscan doesn't probe `pn532_uart` by default — irrelevant, our path is nfcpy. Confirm with
-   `clf.open('tty:USB0:pn532')`. (If you *want* `nfc-list` to work, set
-   `device.connstring="pn532_uart:/dev/ttyUSB0"` in `/etc/nfc/libnfc.conf`.)
-5. **Emit.** `.venv/bin/namedrop ecp-emit de:ad:be:ef:69:69` → unlock the iPhone, bring its **top
-   edge** onto the PN532 coil, hold ~2 s → warp glow.
-
-**No clone baud issue on this module** — nfcpy's default baud bump worked, so the
-`change_baudrate=False` fix above was NOT needed here.
-
-**Wedge/replug gotcha:** killing the emitter with SIGTERM mid-`in_communicate_thru` can leave the
-PN532 unresponsive (next `clf.open` → `ETIMEDOUT`; a raw GetFirmwareVersion gets no reply). DTR/RTS
-toggling does **not** reset it (these boards don't wire the UART adapter's control lines to the
-PN532 reset pin). **Fix = physically unplug/replug the CP2102** (cuts the 5 V, cold-resets the
-module); then re-`chmod` `/dev/ttyUSB0`.
-
-**Parametrized emitter for experiments:** a parametrized variant emitter overrides
-config/subtype/type/TCI/MAC and can run for N seconds — used to prove the `config` byte is not the
-AirDrop↔NameDrop lever.
-
-## Android note (stretch / Milestone D)
-
-Android 15 added "Observe Mode" (watch polling frames before responding) — that's the
-*receive* side. Actively *emitting* a custom ECP poll from a stock Android NFC controller
-is not exposed, so on Android we'd still drive a PN532 over USB-OTG, or do firmware-level
-work. Deferred to the porting phase.
