@@ -13,7 +13,9 @@ https://github.com/user-attachments/assets/d89eb796-a2ed-4275-a1fc-01187c6cd0de
 | **Android phone**, (I used a Pixel 9) | [android/namedrop-card/README.md](android/namedrop-card/README.md) |
 
 The phone or Proxmark3 only initiates the NFC bump. The contact exchange itself runs over AWDL
-using the USB Wi-Fi adapter. I am currently working on getting NameDrop working fully on Android.
+using the USB Wi-Fi adapter. The AR9271 works but is slow; see
+[docs/hardware.md](docs/hardware.md#wi-fi--monitor-mode-and-frame-injection) for a faster
+(not yet verified) MT7612U option. I am currently working on getting NameDrop working fully on Android.
 
 If you want to read about the protocol, skip to **[How NameDrop actually works](#how-namedrop-actually-works)**.
 

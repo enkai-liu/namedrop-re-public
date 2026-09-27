@@ -7,31 +7,13 @@ import android.os.Bundle;
 import java.util.Random;
 
 /**
- * Emit Apple ECP frames from the phone via the reader-mode polling-loop annotation.
+ * Emits Apple ECP frames via the reader-mode polling-loop annotation. Without them iOS treats
+ * the phone as a plain NFC tag and asks for NDEF; the NameDrop frame is what makes it select
+ * the boop AID.
  *
- * Without these frames iOS treats the phone as an ordinary NFC tag and asks it for NDEF.
- * Emitting the NameDrop-TCI frame is what makes iOS classify us as a NameDrop peer and
- * select the boop AID.
- *
- * <h2>Why this toggles rather than emitting while listening</h2>
- *
- * {@code setReaderMode} rejects {@code flags != 0 && techMask == 0} unless the caller is
- * privileged, and that is the only configuration that emits AND keeps HCE listening in one
- * call. An ordinary app can pass {@code FLAG_READER_NFC_A | 0x1000}, which emits but turns
- * HCE routing off. So we burst (reader mode on, frame on the air), then drop reader mode so
- * we are a card again and the iPhone can raise its own field and select us. Same shape the
- * Proxmark3 firmware runs. No root needed.
- *
- * <h2>Facts this is built around</h2>
- * <ol>
- *   <li>The NFC controller appends CRC_A itself: pass the 14-byte frame, never 16.</li>
- *   <li>Only ONE annotation slot works; loading the vendor-extension slot suppresses the
- *       main one. So NameDrop and AirDrop frames alternate across bursts.</li>
- *   <li>It emits a short burst each time reader mode is (re)configured, then goes silent.
- *       Re-arming is what keeps it emitting, and an ON phase below ~450 ms emits nothing.</li>
- *   <li>Our emission suppresses the iPhone's own polling, so the OFF phase buys
- *       activations. 500 ms on / 2000 ms off was the measured knee.</li>
- * </ol>
+ * <p>An unprivileged app can't emit and keep HCE listening at the same time, so this
+ * alternates: {@link #burst} (reader mode on, frame on the air), then {@link #quiet} (reader
+ * mode off, we're a card again and the iPhone can select us). No root needed.
  */
 public final class EcpEmitter {
 
@@ -53,10 +35,18 @@ public final class EcpEmitter {
     static final int FLAGS = FLAG_READER_NFC_A | FLAG_POLLING_DISABLE
             | FLAG_READER_SKIP_NDEF_CHECK | FLAG_READER_NO_PLATFORM_SOUNDS;
 
+    /** Emission only happens on (re)configuring reader mode; below ~450 ms nothing goes out. */
     public static final int ON_MS = 500;
+    /**
+     * Our field suppresses the iPhone's polling, so a long OFF phase buys activations.
+     * 500 on / 2000 off was the measured knee.
+     */
     public static final int OFF_MS = 2000;
 
-    /** NameDrop ECP frame (TCI 01 00 01) header; a 6-byte payload follows. No CRC. */
+    /**
+     * NameDrop ECP frame (TCI 01 00 01) header; a 6-byte payload follows. No CRC: the NFC
+     * controller appends CRC_A, so the frame is 14 bytes, never 16.
+     */
     private static final String NAMEDROP_HEADER = "6a02890500010001";
     /**
      * iOS debounces the warp on a repeated identical frame, so the payload rotates every
@@ -68,6 +58,7 @@ public final class EcpEmitter {
     private static final String FRAME_AIRDROP = "6a02890500010000000000000000";
 
     private static final Random RNG = new Random();
+    /** Only one annotation slot works (the vendor-extension slot suppresses it), so frames alternate. */
     private static boolean nextIsAirdrop = false;
 
     private EcpEmitter() {

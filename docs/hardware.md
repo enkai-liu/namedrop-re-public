@@ -18,7 +18,8 @@ OWL will not run without both. This is the part people get wrong.
 |---|---|
 | **Atheros AR9271 USB adapter** (`ath9k_htc`) | The recommended path. Rock-solid monitor mode + injection on any Linux PC. e.g. Alfa AWUS036NHA, TP-Link TL-WN722N **v1 only** — v2/v3 are a different chipset and will not work. |
 | **Raspberry Pi 3/4 onboard Wi-Fi + [Nexmon](https://github.com/seemoo-lab/nexmon)** | No extra adapter, but you must flash patched firmware. |
-| MediaTek mt76 USB adapters | Often work; less battle-tested for AWDL specifically. |
+| **MediaTek MT7612U USB adapter** (`mt76x2u`) | The faster alternative. Dual-band 802.11ac, in-kernel driver, monitor mode + injection. e.g. Alfa AWUS036ACM. Not yet verified end-to-end with this repo. |
+| Other MediaTek mt76 USB adapters | Often work; less battle-tested for AWDL specifically. |
 
 > **Built-in Wi-Fi will not save you — Intel included.** Intel cards (AX200/201/210) have
 > mature Linux drivers, but frame injection is essentially unsupported by `iwlwifi`, and OWL
@@ -34,6 +35,15 @@ peer sees no retransmissions from us. For NameDrop's small payloads this is surv
 is the main source of intermittency: some bump windows simply never route to us. It is also
 why the mDNS advertiser repeats itself rather than answering a browse once. The card also
 warms up under load — a USB extension cable to keep it off the chassis measurably helps.
+
+**It is also slow.** The AR9271 is a 1x1 802.11n, USB 2.0 part, and on top of that we only
+meet the iPhone on channel 6 for part of each AWDL cycle, and never ACK, so the iPhone burns
+airtime retransmitting. Contact cards are small enough that this rarely matters, but larger
+transfers crawl and a bump can take several seconds to connect. If you want more headroom, try
+a **MediaTek MT7612U** adapter such as the Alfa AWUS036ACM: it is dual-band, so it can also
+follow AWDL onto channels 44 and 149 (`awdl-up.sh -c 44`), and `mt76` supports active monitor
+mode, so it can ACK. It hasn't been verified end-to-end here yet, and `awdl-up.sh` only
+auto-detects `ath9k_htc`, so pass the interface with `-i` (`check-hardware.sh` will also flag it).
 
 `scripts/check-hardware.sh` verifies the adapter is attached and bound to `ath9k_htc`.
 
