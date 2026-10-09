@@ -46,9 +46,9 @@ def _default_host_name():
     """A real iPhone's AWDL hostname is a UUID, and its _airdrop._tcp SRV points at it.
 
     Measured in evidence take awdl-real-bump-20260813-232720-sharesheet: the receiving
-    iPhone advertised `1466011cc7c0._airdrop._tcp.local` with SRV target
-    `cade955f-7ce4-477e-aadf-dfbbd005c495.local`, and the sender resolved exactly that
-    host. Ours advertised `tao-MNCA-XX.local` -- the one shape that did not match.
+    iPhone advertised `<12 hex digits>._airdrop._tcp.local` with SRV target `<uuid>.local`,
+    and the sender resolved exactly that host. Ours advertised the machine's own hostname --
+    the one shape that did not match.
 
     Leading (unproven) hypothesis: that hostname is the SNAP bonjourListenerUUID we hand
     the phone over NFC, which is how the sender knows which mDNS peer is the bumped one.
@@ -72,8 +72,8 @@ def _iface_packed_addresses(interface, fallback):
     opendrop hardcodes ipv6=True and takes the FIRST IPv6 it finds (server.py:51). On awdl0 that
     is the only sensible answer -- there is no IPv4 there. On an infrastructure link it picks the
     LINK-LOCAL fe80::, while a real iPhone on that same link publishes its IPv4: measured
-    2026-08-15 on the Pixel hotspot, `413C042B-...._asquic._udp` -> taotekiiPhone.local ->
-    192.168.168.126, empty TXT. Publishing only fe80:: would ask the phone to route somewhere it
+    2026-08-15 on the Pixel hotspot, `<UUID>._asquic._udp` -> `<name>.local` -> a private
+    IPv4 address, empty TXT. Publishing only fe80:: would ask the phone to route somewhere it
     does not advertise itself, and a bump that fails for that reason is indistinguishable on the
     wire from one iOS ignored.
 
@@ -229,7 +229,7 @@ def _unicast_records(srv, info, addr):
         out.add_answer_at_time(rec, 0)
 
     # Family follows the TARGET. On awdl0 the peer is an fe80:: address so this was AF_INET6-only;
-    # on an infrastructure link the iPhone publishes an IPv4 (measured: 192.168.68.134), and
+    # on an infrastructure link the iPhone publishes an IPv4 (measured), and
     # getaddrinfo(v4_literal, AF_INET6) RAISES -- which, inside the announcer thread, would surface
     # as "unicast announce FAILING ... multicast only" and quietly void the whole experiment.
     family = socket.AF_INET6 if ":" in addr else socket.AF_INET
