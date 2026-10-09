@@ -17,8 +17,8 @@
 # set_monitor_mode — verified in daemon/owl.c; the old "breaks ath9k_htc" note
 # was wrong. netutils.c is also patched to fall back active->passive.)
 #
-# AR9271 is 2.4 GHz only -> default channel 6 (triple-confirmed still in the
-# iPhone's AWDL social rotation with the share sheet open; docs/awdl-channel6-verified.md).
+# AR9271 is 2.4 GHz only -> default channel 6 (still in the iPhone's AWDL social
+# rotation with the share sheet open; see docs/hardware.md).
 # Once awdl0 is up, in ANOTHER terminal:
 #   ip -6 addr show awdl0                  # confirm fe80::/link-local present
 #   ping6 -I awdl0 <iphone-link-local>     # Milestone B success = replies

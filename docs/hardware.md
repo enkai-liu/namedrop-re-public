@@ -26,9 +26,10 @@ OWL will not run without both. This is the part people get wrong.
 > *requires* injection. A Linux'd Intel laptop still needs the AR9271.
 
 **2.4 GHz-only is fine.** AWDL uses channels 6, 44 and 149, and the AR9271 is 2.4 GHz only —
-but modern iPhones keep **channel 6 in their AWDL social rotation** (triple-confirmed), so it
-shares an availability window every cycle. See
-[awdl-channel6-verified.md](awdl-channel6-verified.md).
+but modern iPhones keep **channel 6 in their AWDL social rotation**, so it shares an
+availability window every cycle. A monitor-mode capture pinned to channel 6 with the share
+sheet open (iPhone 15 and 16) heard thousands of AWDL frames, and all but one of the ~4,600
+that carried a channel map listed channel 6 alongside 44 and 149.
 
 **Known limitation.** `ath9k_htc` has no *active* monitor mode, so we never ACK at L2 and the
 peer sees no retransmissions from us. For NameDrop's small payloads this is survivable, but it
