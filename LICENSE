@@ -22,7 +22,7 @@ SOFTWARE.
 
 ---
 
-The Proxmark3 standalone modes under firmware/ are derived from the Proxmark3
-project and are licensed under the GNU General Public License v3 or later; see
-the header of each file. The patches under patches/ apply to seemoo-lab/owl and
-seemoo-lab/opendrop and inherit those projects' licenses.
+The Proxmark3 standalone mode under firmware/ is derived from the Proxmark3
+project and is licensed under the GNU General Public License v3 or later; see
+the header of the file. The patches under patches/ apply to seemoo-lab/owl and
+RfidResearchGroup/proxmark3 and inherit those projects' licenses.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Is our AirDrop receiver ACTUALLY discoverable on awdl0 right now?
+"""Is our receiver ACTUALLY discoverable on awdl0 right now?
 
 Why this exists: take pm3-namedrop-gap1-20260814-123628 burned 75 s of bumping while our
 mDNS was dead. OWL had restarted, awdl0 was recreated with a new ifindex, and the receiver's
@@ -10,31 +10,25 @@ socket open, advertising NOTHING. Every symptom of a healthy rig; zero packets o
 `ps` says nothing useful here, and neither does the listening socket. The only honest check is
 to browse for our own service the way the iPhone would, so that is what this does.
 
-Exit 0 = discoverable (safe to spend a take). Exit 1 = NOT discoverable (restart the receiver).
+Exit 0 = discoverable (safe to bump). Exit 1 = NOT discoverable (restart the advertiser).
 """
 import argparse
+import ipaddress
+import json
+import os
 import socket
 import sys
 import time
 
 try:
+    import ifaddr
     from zeroconf import IPVersion, ServiceBrowser, ServiceListener, Zeroconf
 except ImportError:
     print("FAIL: zeroconf not importable -- run this with the project venv", file=sys.stderr)
     sys.exit(2)
 
-SERVICE = "_airdrop._tcp.local."
-# The record the bump actually resolves. Per evidence take snap-uuid-is-asquic-instance-20260814
-# the listenerUUID is the _asquic INSTANCE name, so checking _airdrop alone can PASS a rig whose
-# _asquic record was never published -- which is exactly the failure that costs a take.
-SERVICE_ASQUIC = "_asquic._udp.local."
-
-
-def ifindex(name):
-    try:
-        return socket.if_nametoindex(name)
-    except OSError:
-        return None
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SERVICE = "_asquic._udp.local."
 
 
 class Collector(ServiceListener):
@@ -56,111 +50,71 @@ class Collector(ServiceListener):
         self.found.pop(name, None)
 
 
+def link_local_ipv6(interface):
+    for adapter in ifaddr.get_adapters():
+        if adapter.name == interface:
+            for ip in adapter.ips:
+                if ip.is_IPv6:
+                    return ipaddress.IPv6Address(ip.ip[0])
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-i", "--interface", default="awdl0")
     ap.add_argument("-t", "--seconds", type=float, default=6.0)
     args = ap.parse_args()
 
-    idx = ifindex(args.interface)
-    if idx is None:
+    try:
+        idx = socket.if_nametoindex(args.interface)
+    except OSError:
         print("FAIL: %s does not exist -- OWL is down" % args.interface)
         return 1
     print("%s is ifindex %d" % (args.interface, idx))
 
-    # The SRV target we require: the bonjourListenerUUID the card hands the phone over NFC.
-    # A mismatch here means the bump has no peer to resolve.
-    expect = None
+    # The instance name we require: the bonjourListenerUUID the card hands the phone over NFC.
+    ident = os.path.join(REPO, "scratchpad", "snap-identity.json")
     try:
-        import json
-        import os
-
-        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(here, "scratchpad", "snap-identity.json")) as fh:
-            expect = json.load(fh)["bonjour_listener_uuid"]
-    except Exception as exc:
-        print("note: no SNAP identity to compare against (%s)" % exc)
-
-    # Bind exactly as opendrop's receiver does (server.py:67-69). The default Zeroconf() is
-    # IPv4-only, and awdl0 carries nothing but an IPv6 link-local -- browsing with the default
-    # finds nothing and looks identical to a dead receiver. That false FAIL is worse than no
-    # check at all, so mirror the receiver's own binding.
-    try:
-        from opendrop.util import AirDropUtil
-
-        addr = AirDropUtil.get_ip_for_interface(args.interface, ipv6=True)
-    except Exception as exc:
-        print("FAIL: cannot resolve %s's IPv6 address (%s)" % (args.interface, exc))
+        with open(ident) as fh:
+            uuid = json.load(fh)["bonjour_listener_uuid"]
+    except (OSError, KeyError, ValueError) as exc:
+        print("FAIL: no SNAP identity at %s (%s)" % (ident, exc))
         return 1
+    want = "%s.%s" % (uuid.upper(), SERVICE)
+
+    # Bind exactly as mdns-advertise.py does. The default Zeroconf() is IPv4-only, and awdl0
+    # carries nothing but an IPv6 link-local -- browsing with the default finds nothing and
+    # looks identical to a dead advertiser.
+    addr = link_local_ipv6(args.interface)
     if addr is None:
         print("FAIL: %s has no IPv6 address -- OWL is not up" % args.interface)
         return 1
-    print("browsing on %s (IPv6, as the receiver binds)" % addr)
+    print("browsing on %s for %s" % (addr, want))
 
     zc = Zeroconf(interfaces=[str(addr)], ip_version=IPVersion.V6Only)
     collector = Collector()
-    asquic = Collector()
     ServiceBrowser(zc, SERVICE, collector)
-    ServiceBrowser(zc, SERVICE_ASQUIC, asquic)
     time.sleep(args.seconds)
     zc.close()
 
-    if not collector.found:
-        print("FAIL: no %s advertised on the network at all." % SERVICE)
-        print("      Our receiver is not on the air. Restart it BEFORE spending a take:")
-        print("      the classic cause is an OWL restart recreating awdl0 while the")
-        print("      receiver's zeroconf socket stays bound to the dead ifindex.")
-        return 1
-
     ok = False
-    for name, info in sorted(collector.found.items()):
-        target = (info.server or "").rstrip(".")
-        short = target[:-6] if target.endswith(".local") else target
-        addrs = []
-        for raw in info.addresses:
-            fam = socket.AF_INET6 if len(raw) == 16 else socket.AF_INET
-            addrs.append(socket.inet_ntop(fam, raw))
-        flags = info.properties.get(b"flags", b"?").decode(errors="replace")
-        mine = expect is not None and short == expect
-        print(
-            "  %s %s\n      SRV -> %s  port %s  flags %s  addr %s"
-            % ("<== OURS" if mine else "        ", name, target, info.port, flags,
-               ",".join(addrs) or "(none)")
-        )
-        ok = ok or mine
-
-    # The _asquic instance is the bind the bump resolves after the Share tap. mdns-advertise.py
-    # names it host_name.upper(), so compare on the instance label, not the SRV target.
-    want = None if expect is None else "%s.%s" % (expect.upper(), SERVICE_ASQUIC)
-    asquic_ok = False
     print("_asquic._udp instances:")
-    if not asquic.found:
+    if not collector.found:
         print("  (none)")
-    for name, info in sorted(asquic.found.items()):
-        mine = want is not None and name.lower() == want.lower()
+    for name, info in sorted(collector.found.items()):
+        mine = name.lower() == want.lower()
         print("  %s %s\n      SRV -> %s  port %s"
               % ("<== OURS" if mine else "        ", name,
                  (info.server or "").rstrip("."), info.port))
-        asquic_ok = asquic_ok or mine
+        ok = ok or mine
 
-    if expect is None:
-        print("PASS(weak): something is advertising, but no expected host to match against.")
-        return 0
     if not ok:
-        print("FAIL: nothing advertises SRV target %s.local" % expect)
-        print("      That UUID is the bind -- the PM3 hands it to the phone as SNAP key 2,")
-        print("      and sharingd resolves the bumped peer by exactly this hostname.")
-        return 1
-    if not asquic_ok:
-        print("FAIL: no %s instance named %s" % (SERVICE_ASQUIC, expect.upper()))
-        print("      _airdrop looks right, so this rig LOOKS healthy -- but the bump resolves")
-        print("      the listenerUUID as the _asquic instance name, and that is missing. The")
-        print("      usual cause is mdns-advertise.py finding no SNAP identity, leaving")
-        print("      host_name None, which makes _register_asquic skip the record entirely.")
+        print("FAIL: nothing advertises %s" % want)
+        print("      Restart mdns-advertise.py. The classic cause is an OWL restart recreating")
+        print("      awdl0 while its zeroconf socket stays bound to the dead ifindex.")
         return 1
 
-    print("PASS: discoverable as %s.local and %s -- safe to spend a take."
-          % (expect, want))
+    print("PASS: discoverable as %s -- safe to bump." % want)
     return 0
 
 

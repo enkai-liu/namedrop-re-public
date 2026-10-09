@@ -26,20 +26,13 @@ If you want to read about the protocol, skip to **[How NameDrop actually works](
 ```bash
 git clone https://github.com/enkai-liu/namedrop-re-public.git namedrop-re
 cd namedrop-re
-./scripts/setup-linux.sh      # apt deps, build OWL, apply patches for OWL and OpenDrop, create .venv
+./scripts/setup-linux.sh      # apt deps, patch and build OWL, create .venv
 ./scripts/check-hardware.sh
 ```
 
-`setup-linux.sh` is safe to re-run and applies the patches in `patches/`:
-
-| Patch | Fixes |
-|---|---|
-| `owl-passive-monitor-fallback` | The AR9271 (`ath9k_htc`) supports only *passive* monitor mode while OWL demands active by default and aborts. |
-| `opendrop-chunked-receive` | Modern senders POST chunked with no `Content-Length`; stock OpenDrop crashed on `int(None)`. |
-| `opendrop-discover-capability-fields` | `/Discover` must return the capability fields a real receiver does. |
-
-Four more patches from the research phase (OpenDrop sender fixes, a Proxmark3 reader-mode
-patch) live in [patches/unused/](patches/unused/README.md). They are not applied.
+`setup-linux.sh` is safe to re-run. It applies `patches/owl-passive-monitor-fallback.patch`:
+the AR9271 (`ath9k_htc`) supports only *passive* monitor mode, while OWL demands active by
+default and aborts.
 
 ## Running a NameDrop
 
@@ -190,8 +183,7 @@ firmware/    Proxmark3 standalone mode (GPL-3.0)
 android/     namedrop-card: the Android phone as the NFC card
 scripts/     setup, AWDL bring-up, identity minting, the two receivers, preflight
 docs/        hardware, the ECP frame reference
-patches/     OWL + OpenDrop patches (auto-applied by setup-linux.sh), Proxmark3 Makefile patch
-             patches/unused/: research-phase patches kept for reference, never applied
+patches/     OWL patch (auto-applied by setup-linux.sh), Proxmark3 Makefile patch
 samples/     the contact card we send back
 ```
 

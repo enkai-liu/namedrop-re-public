@@ -10,10 +10,9 @@ take stalled after `/Discover` waiting for an `/Ask` on a transport the bump doe
 Read straight off those CRYPTO frames (no guessing): **ALPN `h3`, QUIC v1 (0x00000001), TLS 1.3,
 and NO SNI** -- so there is no hostname for the client to match against our certificate.
 
-FIRST GOAL IS OBSERVATION, NOT COMPLETION. Nobody has seen AirDrop's request sequence over QUIC.
-This logs method, path, every header and a summary of the body of whatever arrives. It *also* answers /Discover, /Ask and /Upload with the same shapes our
-HTTPS receiver uses, so if the paths do match we may get a transfer -- but an unknown path is
-logged loudly and 404'd rather than guessed at.
+It answers the NameDrop sequence -- /Hello, /Ask, /Exchange -- and logs method, path, every
+header and a summary of the body of each request. An unknown path is logged loudly and 404'd
+rather than guessed at.
 """
 import argparse
 import asyncio
@@ -97,8 +96,6 @@ def _our_listener_uuid():
         return ""
 COMPUTER_NAME = "namedrop-re"
 COMPUTER_MODEL = "OpenDrop"
-# Same capability fields the HTTPS /Discover response carries; see the server.py patch.
-DEVICE_SUPPORT_FLAGS = 0x1B3FB
 
 
 def _plist(obj):
@@ -199,7 +196,7 @@ class AirDropH3(QuicConnectionProtocol):
         self.transmit()
 
     def _handle(self, path, body):
-        """Mirror the HTTPS receiver's shapes. Unknown paths are 404'd and logged, not guessed."""
+        """Answer /Hello, /Ask and /Exchange. Unknown paths are 404'd and logged, not guessed."""
         p = path.rstrip("/").lower()
         if p.endswith("hello"):
             # AirDrop-over-QUIC opens with POST /Hello:
@@ -248,23 +245,12 @@ class AirDropH3(QuicConnectionProtocol):
             }
             log.info("  *** /Exchange -- answering 200 with our own card to complete the exchange ***")
             return 200, _plist(resp), b"application/octet-stream"
-        if p.endswith("discover"):
-            return 200, _plist({
-                "ReceiverMediaCapabilities": json.dumps({"Version": 1}).encode(),
-                "ReceiverComputerName": COMPUTER_NAME,
-                "ReceiverModelName": COMPUTER_MODEL,
-                "IsAirDropable": True,
-                "DeviceSupportFlags": DEVICE_SUPPORT_FLAGS,
-            }), b"application/octet-stream"
         if p.endswith("ask"):
             log.info("  *** /Ask OVER QUIC -- ACCEPTING ***")
             return 200, _plist({
                 "ReceiverModelName": COMPUTER_MODEL,
                 "ReceiverComputerName": COMPUTER_NAME,
             }), b"application/octet-stream"
-        if p.endswith("upload"):
-            log.info("  *** /Upload OVER QUIC -- %d bytes ***", len(body))
-            return 200, b"", b"application/octet-stream"
         log.warning("  !! UNKNOWN PATH %r -- 404. This is new protocol; record it.", path)
         return 404, b"", b"application/octet-stream"
 

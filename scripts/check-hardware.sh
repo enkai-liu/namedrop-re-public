@@ -57,9 +57,9 @@ done
   && pass "OWL build present" \
   || fail "OWL build missing (run scripts/setup-linux.sh)"
 [ -x "$PY" ] \
-  && "$PY" -c 'import opendrop' >/dev/null 2>&1 \
-  && pass "OpenDrop present (mdns-advertise.py needs it)" \
-  || fail "OpenDrop is unavailable in .venv (run scripts/setup-linux.sh)"
+  && "$PY" -c 'import zeroconf' >/dev/null 2>&1 \
+  && pass "zeroconf present (mdns-advertise.py needs it)" \
+  || fail "zeroconf is unavailable in .venv (run scripts/setup-linux.sh)"
 [ -x "$PY" ] \
   && "$PY" -c 'import aioquic' >/dev/null 2>&1 \
   && pass "aioquic present (asquic-receiver.py needs it)" \
