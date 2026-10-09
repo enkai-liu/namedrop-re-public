@@ -63,7 +63,7 @@ The same identity is used in several places and must stay in sync:
 
 | Artifact | Used by |
 |---|---|
-| `firmware/hf_namedrop_snap.h` | the Proxmark3 standalone mode |
+| `hf_namedrop_snap.h` (in your Proxmark3 checkout) | the Proxmark3 standalone mode |
 | `android/namedrop-card/.../SnapBlobs.java` | the Android card app (gitignored) |
 | `scratchpad/snap-identity.json` | the mDNS instance name, and the TLS cert's key |
 

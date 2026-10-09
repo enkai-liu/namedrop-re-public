@@ -30,10 +30,12 @@ scratch/
 .env
 *.local
 
-# The SNAP card identity: PRIVATE keys for the applet in firmware/hf_namedrop_snap.h.
+# The SNAP card identity: PRIVATE keys for the applet in hf_namedrop_snap.h.
 # Regenerate both halves together with scripts/build-snap-serverinfo.py -- the header
 # holds only the public blob, this file holds the private half the AWDL leg needs.
+# The header is generated per identity too, so a committed copy would be someone else's.
 snap-identity.json
+firmware/hf_namedrop_snap.h
 
 # Extracted Apple-ID credentials -- NEVER commit these.
 *.pem
