@@ -16,6 +16,9 @@ third_party/owl/build/
 *.o
 *.so
 
+# Contact cards received by the receivers
+received/
+
 # Captures / scratch / takes
 captures/
 takes/

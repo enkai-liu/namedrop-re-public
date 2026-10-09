@@ -28,11 +28,6 @@ That writes the C header into your PM3 checkout and saves the private half to
 both of which live in that JSON file. Regenerate the card's half alone and iOS resolves a UUID
 nobody is serving, which on the wire is indistinguishable from the bump never working.
 
-The generator's positive control re-encodes a real bump's own CBOR frames and demands
-byte-identical output before emitting anything. Those reference traces are research captures
-and are not shipped here, so the control is skipped unless you drop your own PM3
-`trace list -t 14a` captures at the paths named in `REAL_TAKES`.
-
 ## 2. Build into a Proxmark3 checkout
 
 ```bash

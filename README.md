@@ -97,9 +97,7 @@ Three terminals:
 ```bash
 sudo ./scripts/awdl-up.sh                                    # 1. AWDL; foreground, Ctrl-C to stop
 .venv/bin/python scripts/mdns-advertise.py -i awdl0           # 2. publishes <uuid>._asquic._udp
-.venv/bin/python scripts/asquic-receiver.py \
-    --cert scratchpad/asquic-keys/snapkey-cert.pem \
-    --key  scratchpad/asquic-keys/snapkey-key.pem              # 3. serves the QUIC/HTTP-3
+.venv/bin/python scripts/asquic-receiver.py                  # 3. serves the QUIC/HTTP-3
 ```
 
 **Both receivers are required.** `asquic-receiver.py` speaks the QUIC the bump routes to, but
@@ -120,6 +118,7 @@ way to check.
 
 Unlock the iPhone, hold its top edge to the Proxmark3 antenna, tap **Share** on the NameDrop
 prompt. The card you send back is `samples/contact.vcf` — override with `--vcard`.
+The iPhone's card is saved to `received/`.
 
 With an Android phone, stay on the iPhone's **home screen** (no share sheet), and tap the
 iPhone's top edge to the phone's **NFC antenna** every few seconds rather than holding it

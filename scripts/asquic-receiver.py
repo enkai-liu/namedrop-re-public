@@ -11,8 +11,7 @@ Read straight off those CRYPTO frames (no guessing): **ALPN `h3`, QUIC v1 (0x000
 and NO SNI** -- so there is no hostname for the client to match against our certificate.
 
 FIRST GOAL IS OBSERVATION, NOT COMPLETION. Nobody has seen AirDrop's request sequence over QUIC.
-This logs method, path, every header and the full body of whatever arrives, and saves bodies
-alongside the HTTPS captures. It *also* answers /Discover, /Ask and /Upload with the same shapes our
+This logs method, path, every header and a summary of the body of whatever arrives. It *also* answers /Discover, /Ask and /Upload with the same shapes our
 HTTPS receiver uses, so if the paths do match we may get a transfer -- but an unknown path is
 logged loudly and 404'd rather than guessed at.
 """
@@ -22,7 +21,6 @@ import json
 import logging
 import os
 import plistlib
-import time
 
 from aioquic.asyncio import QuicConnectionProtocol, serve
 from aioquic.h3.connection import H3_ALPN, H3Connection
@@ -53,13 +51,13 @@ _h3c.validate_request_headers = _lenient_validate_request_headers
 log = logging.getLogger("asquic")
 
 # Seconds to wait after the /Exchange 200 before sending CONNECTION_CLOSE, so the response is
-# on the wire and acked first. Tunable: --exchange-close-delay, and 0 disables the close entirely
-# (which reproduces the pre-2026-08-14 behaviour, i.e. the control arm).
+# on the wire and acked first.
 EXCHANGE_CLOSE_DELAY = 1.0
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-CAP_DIR = None
+# Contact cards received over /Exchange land here.
+RECEIVED_DIR = os.path.join(REPO, "received")
 
 # The contact card we hand back in /Exchange, loaded from --vcard at startup. The shipped
 # default (samples/contact.vcf) is the "Genuine Apple" test card -- it is what proves the
@@ -101,17 +99,6 @@ COMPUTER_NAME = "namedrop-re"
 COMPUTER_MODEL = "OpenDrop"
 # Same capability fields the HTTPS /Discover response carries; see the server.py patch.
 DEVICE_SUPPORT_FLAGS = 0x1B3FB
-
-
-def _save(tag, data):
-    if not CAP_DIR or not data:
-        return None
-    os.makedirs(CAP_DIR, exist_ok=True)
-    path = os.path.join(CAP_DIR, "%d-h3-%s.body.raw" % (int(time.time()), tag.strip("/") or "root"))
-    with open(path, "wb") as fh:
-        fh.write(data)
-    log.info("  saved %d-byte body -> %s", len(data), os.path.basename(path))
-    return path
 
 
 def _plist(obj):
@@ -184,7 +171,6 @@ class AirDropH3(QuicConnectionProtocol):
         path = st["headers"].get(":path", "")
         body = st["body"]
         log.info("  body: %s", _describe_body(body))
-        _save(path, body)
 
         status, payload, ctype = self._handle(path, body)
         log.info("  -> %s (%d bytes)", status, len(payload))
@@ -203,7 +189,7 @@ class AirDropH3(QuicConnectionProtocol):
         # AirDrop off/on toggle (which tears that state down) restores it, same identity, and that
         # is what the "iOS dedups on the listener UUID" reading actually was. Close cleanly, after
         # a beat so the 200 is on the wire and acked first.
-        if path.rstrip("/").lower().endswith("exchange") and EXCHANGE_CLOSE_DELAY > 0:
+        if path.rstrip("/").lower().endswith("exchange"):
             asyncio.get_running_loop().call_later(EXCHANGE_CLOSE_DELAY, self._close_session)
 
     def _close_session(self):
@@ -249,7 +235,7 @@ class AirDropH3(QuicConnectionProtocol):
             vc = req.get("VCardData")
             if isinstance(vc, bytes):
                 name = (req.get("FullName") or "card").replace("\n", " ").replace("/", "_")
-                dst = os.path.join(CAP_DIR, "RECEIVED-%s.vcf" % name)
+                dst = os.path.join(RECEIVED_DIR, "RECEIVED-%s.vcf" % name)
                 with open(dst, "wb") as fh:
                     fh.write(vc)
                 log.info("  *** RECEIVED CONTACT CARD over NameDrop: %s (%d B) -> %s ***",
@@ -284,24 +270,18 @@ class AirDropH3(QuicConnectionProtocol):
 
 
 async def main():
-    global EXCHANGE_CLOSE_DELAY
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="::", help="bind address (default :: = all IPv6)")
     ap.add_argument("--port", type=int, default=60192,
                     help="must match the port advertised in the _asquic SRV record")
-    ap.add_argument("--cert", default=os.path.expanduser("~/.opendrop/keys/certificate.pem"))
-    ap.add_argument("--key", default=os.path.expanduser("~/.opendrop/keys/key.pem"))
-    ap.add_argument("-o", "--outdir", default=os.path.abspath("./captures"))
+    ap.add_argument("--cert", default=os.path.join(REPO, "scratchpad", "asquic-keys", "snapkey-cert.pem"),
+                    help="TLS cert carrying SNAP key 1 (default: what mint-snapkey-cert.sh writes)")
+    ap.add_argument("--key", default=os.path.join(REPO, "scratchpad", "asquic-keys", "snapkey-key.pem"))
     ap.add_argument("--vcard", default=os.path.join(REPO, "samples", "contact.vcf"),
                     help="the contact card we send back in /Exchange (default: samples/contact.vcf)")
-    ap.add_argument("--exchange-close-delay", type=float, default=EXCHANGE_CLOSE_DELAY,
-                    help="seconds after the /Exchange 200 before CONNECTION_CLOSE. 0 = never "
-                         "close (the pre-2026-08-14 behaviour; use as the control arm)")
     args = ap.parse_args()
-    EXCHANGE_CLOSE_DELAY = args.exchange_close_delay
 
-    global CAP_DIR
-    CAP_DIR = args.outdir
+    os.makedirs(RECEIVED_DIR, exist_ok=True)
     _load_our_card(args.vcard)
 
     config = QuicConfiguration(is_client=False, alpn_protocols=H3_ALPN)
@@ -310,7 +290,7 @@ async def main():
     await serve(args.host, args.port, configuration=config, create_protocol=AirDropH3)
     log.info("serving HTTP/3 on [%s]:%d  (ALPN %s)", args.host, args.port, H3_ALPN)
     log.info("cert: %s", args.cert)
-    log.info("captures -> %s", CAP_DIR)
+    log.info("received cards -> %s", RECEIVED_DIR)
     log.info("our card: %s (%s, %d B)", args.vcard, OUR_FULL_NAME, len(OUR_VCARD))
     log.info("waiting for the bump to route a QUIC connection here...")
     await asyncio.Future()

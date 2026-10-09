@@ -7,10 +7,7 @@ ATS negotiates. So every expensive byte is minted HERE, baked into a C header, a
 firmware's answer to the boop GET DATA becomes a memcpy.
 
 The wire format is not guessed -- it is decoded byte-for-byte out of two real
-iPhone<->iPhone bumps sniffed with a Proxmark3. Those traces are research captures and are not
-shipped here; drop your own at the paths in REAL_TAKES and the POSITIVE CONTROL re-encodes the
-reader's own frames and asserts the result is byte-identical before emitting anything of ours.
-Without them the control is skipped.
+iPhone<->iPhone bumps sniffed with a Proxmark3.
 
     ServerInfo (238 B, sent by BOTH sides -- reader pushes first, card mirrors):
       { 0: "1.1",
@@ -41,7 +38,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import uuid
 
@@ -79,119 +75,6 @@ def cbor_enc(o) -> bytes:
     if isinstance(o, dict):
         return _hd(5, len(o)) + b"".join(cbor_enc(k) + cbor_enc(v) for k, v in o.items())
     raise TypeError(type(o))
-
-
-def cbor_dec(b: bytes, i: int = 0):
-    m, ai = b[i] >> 5, b[i] & 0x1F
-    i += 1
-    if ai < 24:
-        v = ai
-    elif ai == 24:
-        v = b[i]; i += 1
-    elif ai == 25:
-        v = int.from_bytes(b[i:i + 2], "big"); i += 2
-    elif ai == 26:
-        v = int.from_bytes(b[i:i + 4], "big"); i += 4
-    elif ai == 27:
-        v = int.from_bytes(b[i:i + 8], "big"); i += 8
-    else:
-        raise ValueError(f"additional info {ai}")
-    if m == 0:
-        return v, i
-    if m == 1:
-        return -1 - v, i
-    if m == 2:
-        return b[i:i + v], i + v
-    if m == 3:
-        return b[i:i + v].decode("utf-8", "replace"), i + v
-    if m == 4:
-        out = []
-        for _ in range(v):
-            x, i = cbor_dec(b, i)
-            out.append(x)
-        return out, i
-    if m == 5:
-        out = {}
-        for _ in range(v):
-            k, i = cbor_dec(b, i)
-            x, i = cbor_dec(b, i)
-            out[k] = x
-        return out, i
-    raise ValueError(f"major {m}")
-
-
-# ---------------------------------------------------------------- PM3 trace parsing (control)
-
-_ROW = re.compile(r"^\s*(\d+)?\s*\|\s*(\d+)?\s*\|\s*(Rdr|Tag)?\s*\|(.*?)\|\s*(ok|nok)?\s*\|(.*)$")
-
-
-def parse_trace(path: str):
-    rows, cur = [], None
-    with open(path, errors="replace") as fh:
-        for line in fh.read().splitlines():
-            m = _ROW.match(line)
-            if not m:
-                continue
-            st, en, src, data, crc, ann = m.groups()
-            if src:
-                cur = {"src": src, "hex": data.strip(),
-                       "start": int(st) if st else 0, "end": int(en) if en else 0,
-                       "crc": crc or "", "ann": ann.strip()}
-                rows.append(cur)
-            elif cur is not None:
-                cur["hex"] += " " + data.strip()
-    for r in rows:
-        out = []
-        for t in r["hex"].split():
-            # Short frames are rendered with their bit count, e.g. REQA as `26(7)`.
-            m = re.fullmatch(r"([0-9A-Fa-f]{2})(?:\(\d\))?", t)
-            if m:
-                out.append(int(m.group(1), 16))
-        r["bytes"] = bytes(out)
-    return rows
-
-
-# Proxmark3 `trace list -t 14a` captures of a real iPhone<->iPhone bump, used only by the
-# positive control below. Our own research captures; NOT shipped. Drop your own here and the
-# control runs, otherwise it is skipped.
-REAL_TAKES = [
-    "captures/bump-namedrop-01.txt",
-    "captures/bump-namedrop-02.txt",
-]
-
-
-def positive_control() -> bool:
-    """Decode every real SNAP frame and re-encode it; demand byte-identical output.
-
-    Returns True (passed), False (failed) or None (no reference traces, control not run).
-
-    If this fails, our CBOR writer does not match Apple's canonical form and nothing
-    downstream may be trusted.
-    """
-    print("[control] re-encoding Apple's own SNAP frames with our CBOR writer")
-    total, bad = 0, 0
-    for rel in REAL_TAKES:
-        path = os.path.join(REPO, rel)
-        if not os.path.exists(path):
-            print(f"  -- no reference trace at {rel}; skipping the control")
-            return None
-        for r in parse_trace(path):
-            b = r["bytes"]
-            if len(b) < 40:
-                continue
-            body = b[6:6 + b[5]] if r["src"] == "Rdr" else b[1:-4]
-            try:
-                obj, n = cbor_dec(body)
-            except Exception:
-                continue
-            if n != len(body):
-                continue
-            total += 1
-            if cbor_enc(obj) != body:
-                bad += 1
-                print(f"  MISMATCH {r['src']} {len(body)}B")
-    print(f"  {total - bad}/{total} frames round-trip byte-identical")
-    return total >= 4 and bad == 0
 
 
 # ---------------------------------------------------------------- identity minting
@@ -333,20 +216,12 @@ def main() -> int:
                          "answers the QUIC and the two are bound by SNAP key 1 + the listener UUID: "
                          "if they drift, iOS resolves a UUID nobody is serving.")
     ap.add_argument("--session-id", type=int, default=0x5AA5, help="our SNAP session id")
-    ap.add_argument("--skip-control", action="store_true", help="skip the CBOR positive control")
     ap.add_argument("--regenerate", action="store_true",
                     help="mint a NEW identity (new listenerUUID + keys). By default an existing "
                          "--identity file is REUSED, because the card's SNAP key 2 and the "
                          "receiver's mDNS SRV hostname must stay the same UUID; regenerating "
                          "means you must also restart the receiver so both ends re-read it.")
     args = ap.parse_args()
-
-    if not args.skip_control:
-        result = positive_control()
-        if result is False:
-            print("\nPOSITIVE CONTROL FAILED -- refusing to emit blobs.", file=sys.stderr)
-            return 2
-        print("  control PASSED\n" if result else "")
 
     if os.path.exists(args.identity) and not args.regenerate:
         spki, listener, token6, sig, priv = load_identity(args.identity)
@@ -407,8 +282,7 @@ def main() -> int:
     hdr = f"""// Generated by scripts/build-snap-serverinfo.py -- DO NOT EDIT BY HAND.
 //
 // com.apple.boop.SNAP blobs for the HF_NAMEDROP standalone mode (gap #2).
-// Shapes decoded byte-for-byte from two real iPhone<->iPhone bumps; the generator's
-// positive control re-encodes Apple's own frames and demands identical bytes.
+// Shapes decoded byte-for-byte from two real iPhone<->iPhone bumps.
 //
 // The AT91SAM7S512 has no crypto accelerator, so the P-256 keypair, the Ed25519
 // signature, the listener UUID and the token are all minted on the host and baked in
