@@ -1,0 +1,14 @@
+--- a/tech/kwik/flupke/server/impl/Http3ServerConnectionImpl.java
++++ b/tech/kwik/flupke/server/impl/Http3ServerConnectionImpl.java
+@@ -213,7 +213,10 @@
+         String path = headersFrame.getPseudoHeader(HeadersFrame.PSEUDO_HEADER_PATH);
+         if (method == null ||
+                 (!method.equals("CONNECT") &&
+-                        (scheme == null || path == null || !hasValidAuthorityHeader(headersFrame))) ||
++                        /* NAMEDROP PATCH: iOS AirDrop omits :authority (and Host); require only
++                           :method + :path, as scripts/asquic-receiver.py does for aioquic. Upstream:
++                           (scheme == null || path == null || !hasValidAuthorityHeader(headersFrame)) */
++                        (path == null)) ||
+                 (method.equals("CONNECT") &&
+                         headersFrame.getPseudoHeader(HeadersFrame.PSEUDO_HEADER_AUTHORITY) == null)) {
+             // https://www.rfc-editor.org/rfc/rfc9114.html#name-request-pseudo-header-field

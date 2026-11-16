@@ -52,6 +52,8 @@ android/**/build/
 android/**/.gradle/
 android/**/local.properties
 android/namedrop-card/app/src/main/java/com/namedrop/card/SnapBlobs.java
+# Built by android/namedrop-card/flupke-patch/build.sh.
+android/namedrop-card/flupke-patch/flupke-0.9.4-namedrop.jar
 
 # The _asquic TLS keypair from mint-snapkey-cert.sh. Its private key IS the SNAP identity's.
 scratchpad/asquic-keys/

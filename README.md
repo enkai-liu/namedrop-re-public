@@ -1,22 +1,23 @@
 # namedrop-re
 
 An implementation of Apple's NameDrop protocol. Tap an iPhone against a Proxmark3 or an
-Android phone, receive the iPhone's contact card over QUIC, and send one back.
+Android phone, receive the iPhone's contact card over QUIC, and send one back. On a rooted
+Pixel 9 the whole exchange runs on the phone alone.
 
 https://github.com/user-attachments/assets/d89eb796-a2ed-4275-a1fc-01187c6cd0de
 
-You need an AR9271 USB Wi-Fi adapter, a Linux machine (I use Ubuntu 24.04), and one of these
-to act as the NFC card:
+There are two ways to run it:
 
-| NFC card | Setup |
-|---|---|
-| Proxmark3 (Iceman fork) | [firmware/README.md](firmware/README.md) |
-| Android phone (tested on a Pixel 9) | [android/namedrop-card/README.md](android/namedrop-card/README.md) |
+| Setup | NFC card | AWDL + QUIC | Guide |
+|---|---|---|---|
+| **Rooted Pixel only** | Pixel 9 (`namedrop-card` app) | the same Pixel, as root, on Google's built-in AWDL stack | [android/awdl-root/README.md](android/awdl-root/README.md) |
+| **Linux + card** | Proxmark3 (Iceman fork) or an unrooted Android phone (tested on a Pixel 9) | Linux (I use Ubuntu 24.04) with an AR9271 USB Wi-Fi adapter | this README, plus [firmware/README.md](firmware/README.md) or [android/namedrop-card/README.md](android/namedrop-card/README.md) |
 
-The NFC card only handles the bump. The contact exchange itself runs over AWDL on the USB
-adapter. The AR9271 works but is slow; [docs/hardware.md](docs/hardware.md#wi-fi--monitor-mode-and-frame-injection)
-lists a faster MT7612U option that I haven't verified yet. I'm currently working on running
-the whole thing on Android.
+In the Linux setup the NFC card only handles the bump, and the contact exchange runs over AWDL
+on the USB adapter. The AR9271 works but is slow; [docs/hardware.md](docs/hardware.md#wi-fi--monitor-mode-and-frame-injection)
+lists a faster MT7612U option that I haven't verified yet.
+
+The rest of this README covers the Linux setup. For the rooted Pixel, follow its guide.
 
 To read about the protocol, skip to [How it works](#how-it-works).
 
@@ -154,6 +155,14 @@ frames per burst. I haven't isolated which of these matters, and haven't tried s
 order of the two frames. [firmware/hf_namedrop.c](firmware/hf_namedrop.c) lists the tests
 that would.
 
+### AWDL on a Pixel
+
+Pixels already speak AWDL: Google's Quick Share uses it for AirDrop interop, through a stack
+called `mosey` that exposes the link as `mosey0`. Apps can't use it, but root can. We raise the
+link by calling Google's `IMoseyService` directly, announce our `_asquic` instance on it, add the
+routing rule the link is missing, and run the QUIC/HTTP-3 receiver in Java on the phone.
+Details in [android/awdl-root/README.md](android/awdl-root/README.md#why-this-works).
+
 ### Why not a PN532
 
 The bump needs a device that acts as an NFC card. A PN532 can only be a reader, so the iPhone
@@ -165,10 +174,11 @@ switching to reader mode. More in [docs/hardware.md](docs/hardware.md).
 
 ```
 firmware/    Proxmark3 standalone mode (GPL-3.0)
-android/     Android app that acts as the NFC card
+android/     namedrop-card: the NFC card app (+ the on-phone receiver)
+             awdl-root: root tools that run AWDL and the receiver on a Pixel
 scripts/     setup, AWDL, identity and cert generation, receivers, preflight
 docs/        hardware notes, ECP frame reference
-patches/     OWL patch (applied by setup-linux.sh), Proxmark3 Makefile patch
+patches/     OWL patch (applied by setup-linux.sh), Proxmark3 Makefile patch, Flupke patch
 samples/     the contact card sent back
 ```
 
@@ -182,11 +192,12 @@ aren't published; the comment states the result.
 | AWDL | [seemoo-lab/owl](https://github.com/seemoo-lab/owl) |
 | NFC ECP | [kormax/apple-enhanced-contactless-polling](https://github.com/kormax/apple-enhanced-contactless-polling) |
 | Proxmark3 | [RfidResearchGroup/proxmark3](https://github.com/RfidResearchGroup/proxmark3) |
-| QUIC / HTTP-3 | [aiortc/aioquic](https://github.com/aiortc/aioquic) |
+| QUIC / HTTP-3 | [aiortc/aioquic](https://github.com/aiortc/aioquic), and on Android [ptrd/kwik](https://github.com/ptrd/kwik) + [ptrd/flupke](https://github.com/ptrd/flupke) |
 
 ## License
 
 MIT, see [LICENSE](LICENSE). `firmware/hf_namedrop.c` is GPL-3.0-or-later, per its header.
+`patches/flupke-0.9.4-no-authority.patch` modifies Flupke and is LGPL-3.0, like Flupke.
 
 This is experimental research software for exchanging contacts between devices you own.
 Apple, AirDrop and NameDrop are trademarks of Apple Inc. This project is not affiliated with

@@ -2,7 +2,12 @@
 
 This app does the Proxmark3's job on an **unrooted Android phone**: it emits the Apple ECP
 frames, answers the bump as an ISO-DEP card, and runs the `com.apple.boop.SNAP` handshake.
-The AWDL/QUIC half still runs on Linux with the AR9271, just as it does in the Proxmark3 setup.
+The AWDL/QUIC half runs on Linux with the AR9271, just as it does in the Proxmark3 setup.
+
+**On a rooted Pixel, the phone can do the AWDL/QUIC half too**, with no Linux machine: the APK
+also carries a QUIC/HTTP-3 receiver that runs as root on the Pixel's own AWDL link. That setup
+is in [../awdl-root/README.md](../awdl-root/README.md). The steps below are for the Linux setup;
+the card side (steps 1, 2 and 4) is the same in both.
 
 ```
 iPhone ──NFC bump──▶ Android phone (this app)       SNAP: hands over key 1 + listenerUUID
@@ -50,18 +55,20 @@ drifts from the receiver's, iOS resolves a UUID nobody is serving. The app shows
 ```bash
 cd android/namedrop-card
 export ANDROID_HOME=~/Android/Sdk        # or ~/Library/Android/sdk on a Mac
+./flupke-patch/build.sh                  # once: the patched HTTP/3 library the receiver uses
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The build fails with `cannot find symbol SnapBlobs` until step 1 has run.
+The build fails with `cannot find symbol SnapBlobs` until step 1 has run, and with a missing
+`flupke-0.9.4-namedrop.jar` until `flupke-patch/build.sh` has run.
 
 ## 3. Bring up the Linux receivers
 
 Same as the Proxmark3 setup: make the cert carrying SNAP key 1
 (`./scripts/mint-snapkey-cert.sh`), then bring up AWDL,
 `mdns-advertise.py` and `asquic-receiver.py`, and run `receiver-preflight.py` until it
-passes. See steps 3 and 4 of the [main README](../../README.md#running-a-namedrop).
+passes. See steps 3 and 4 of the [main README](../../README.md#running-it).
 
 ## 4. Bump
 
@@ -126,3 +133,5 @@ NFC half is done, and `asquic-receiver.py` should log `/Ask` → `/Exchange` wit
 - **`MainActivity`** holds the preferred-service slot and foreground dispatch. It also never
   starts an emission burst while an ISO-DEP session is in flight, because raising our own field
   would tear the handshake down.
+- **`h3/NameDropReceiver`** is the QUIC/HTTP-3 receiver for the rooted setup. It isn't started by
+  the app: `android/awdl-root/` runs it as root with `app_process`, using the APK as its classpath.

@@ -1,11 +1,12 @@
 # Hardware
 
 Three things, plus an iPhone. The radio stack runs on a **Linux PC or Raspberry Pi** —
-macOS can't do this, and stock Android has no API for the AWDL/QUIC leg.
+macOS can't do this, and stock Android has no API for the AWDL/QUIC leg. The exception is a
+**rooted Pixel 9**, which replaces all three: see [NFC — or an Android phone is the card](#nfc--or-an-android-phone-is-the-card).
 
 | Part | Cost | Role |
 |---|---|---|
-| **Atheros AR9271 USB Wi-Fi** | ~$20 | AWDL. The one part with no substitute. |
+| **Atheros AR9271 USB Wi-Fi** | ~$20 | AWDL. The one part with no substitute, short of a rooted Pixel. |
 | **Proxmark3** *or* an **Android phone** | ~$50–90 / — | The card. Answers the NFC bump. |
 | **Linux PC / Raspberry Pi** | — | Runs OWL and the two receiver processes. |
 | **iPhone, iOS 17+** | — | The peer. |
@@ -76,7 +77,9 @@ the air. See [../android/namedrop-card/README.md](../android/namedrop-card/READM
 | NFC controller that honours `READER_TECH_A_POLLING_LOOP_ANNOTATION` | Without ECP emission, iOS reads the phone as a plain tag. **Tested: Pixel 9** (ST54L, Android 16 and 17). Other phones are untested. |
 | No root | The app toggles between emitting and being a card. Only doing both at once needs privilege. |
 
-The phone does the NFC half only. It still needs the AR9271 + Linux machine for AWDL and QUIC.
+Unrooted, the phone does the NFC half only and still needs the AR9271 + Linux machine for AWDL
+and QUIC. **Rooted, a Pixel 9 needs neither:** it uses Google's own AWDL stack (`mosey`) for the
+link. See [../android/awdl-root/README.md](../android/awdl-root/README.md).
 
 Pixel antenna placement differs from an iPhone's: the coil is **mid-body** on the back.
 
